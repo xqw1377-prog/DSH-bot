@@ -4,13 +4,14 @@
 不能读取生产数据库或券商/交易所密钥。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
 from dsh_contracts import Market, OrderIntent
 from quant_gateway.adapters import get_adapter
+from quant_gateway.auth import require_read
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_read)])
 
 
 @router.get("/markets/{market}/health")

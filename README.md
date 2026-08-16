@@ -50,12 +50,52 @@ docs/                   # 产品与架构文档
 
 ### 后端（Python 3.12+）
 
+> 注意：`domain-contracts` 要求 Python >= 3.12（使用 `StrEnum`）。macOS 系统默认 `python3` 可能是 3.9/3.10，请用 `python3.12` 创建虚拟环境。
+
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e packages/domain-contracts -e services/quant-gateway -e services/strategy-evolution -e services/risk-policy -e services/projection-api
+python3.12 -m venv .venv
+.venv\Scripts\Activate.ps1      # Windows
+# source .venv/bin/activate     # macOS / Linux
+pip install -e packages/domain-contracts -e packages/dsh-runtime \
+  -e services/quant-gateway -e services/strategy-evolution \
+  -e services/risk-policy -e services/projection-api \
+  -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
+  -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
+  -e plugins/dsh-risk-auditor -e plugins/dsh-incident-center \
+  -e plugins/dsh-a-stock-agent -e plugins/dsh-strategy-lab
 uvicorn quant_gateway.main:app --port 8001
 ```
+
+### 环境变量（Quant Gateway）
+
+| 变量 | 说明 |
+|---|---|
+| `QUANT_GATEWAY_DB` | SQLite 数据库路径（审批、幂等键、审计日志持久化）；未设置时用内存，仅限本地开发 |
+| `QUANT_GATEWAY_API_KEYS` | API key 鉴权，分号分隔：`key/name:read,write;key2/name2:read`；未设置时开放（开发模式），生产必须配置 |
+| `RISK_POLICY_URL` | risk-policy 服务地址，默认 `http://127.0.0.1:8003` |
+
+### 测试与校验
+
+```bash
+pytest services/ plugins/ packages/dsh-runtime -q   # 后端全量测试
+python scripts/check_schemas.py     # 事件 schema 与 envelope 一致性
+```
+
+CI（`.github/workflows/ci.yml`）在每次 push/PR 自动执行以上校验和前端构建。
+
+### 运行第一个真实 Bot（Crypto Bot on DSH）
+
+```bash
+# 终端 1：Quant Gateway（本地纸面模式，不连真实交易所）
+DSH_LOCAL_PAPER=1 QUANT_GATEWAY_DB=/tmp/gw.db uvicorn quant_gateway.main:app --port 8001
+
+# 终端 2：Crypto Bot —— DSH Session 加载 Profile，定时主动运行
+DSH_RUNTIME_DB=/tmp/runtime.db python scripts/run_crypto_bot.py --every 60
+```
+
+每个 tick：检查市场健康 → 拉取量化系统信号 → 强度达标且未处理过的信号
+生成订单预览 → 发起人工审批（记忆去重，同一信号只发起一次）→ 事件与记忆持久化。
+审批在前端 http://localhost:3000/approvals 或 `POST /v1/approvals/{id}/decide` 处理。
 
 ### 前端（Node 20+ / pnpm）
 

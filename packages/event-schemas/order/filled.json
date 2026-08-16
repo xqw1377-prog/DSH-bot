@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/order/filled.json",
+  "title": "OrderFilled",
+  "type": "object",
+  "required": [
+    "order_id",
+    "market",
+    "symbol",
+    "filled_quantity",
+    "avg_price",
+    "filled_at"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "symbol": {
+      "type": "string"
+    },
+    "filled_quantity": {
+      "type": "string",
+      "description": "decimal string"
+    },
+    "avg_price": {
+      "type": "string",
+      "description": "decimal string"
+    },
+    "filled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "fees": {
+      "type": "string",
+      "description": "decimal string"
+    }
+  }
+}
