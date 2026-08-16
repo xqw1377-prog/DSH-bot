@@ -1,0 +1,111 @@
+"""审批存储与风控策略调用。
+
+内存实现，生产应替换为持久化存储（带 TTL 与审计）。
+审批是资金动作的门禁：只有状态为 APPROVED 的审批才能放行订单。
+"""
+
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+import httpx
+from dsh_contracts import Approval, ApprovalStatus, Market
+
+RISK_POLICY_URL_DEFAULT = "http://127.0.0.1:8003"
+# 审批有效期：超时未决的审批视为 EXPIRED，防止陈旧审批被滥用
+APPROVAL_TTL = timedelta(minutes=30)
+
+# 内存审批账本
+_approvals: dict[str, Approval] = {}
+
+
+def create_approval(
+    market: Market,
+    requested_by_bot: str,
+    subject_type: str,
+    subject_id: str,
+    evidence_refs: list[str] | None = None,
+) -> Approval:
+    approval = Approval(
+        approval_id=f"appr-{uuid4().hex[:12]}",
+        status=ApprovalStatus.REQUESTED,
+        market=market,
+        requested_by_bot=requested_by_bot,
+        requested_at=datetime.now(UTC),
+        subject_type=subject_type,
+        subject_id=subject_id,
+        evidence_refs=evidence_refs or [],
+    )
+    _approvals[approval.approval_id] = approval
+    return approval
+
+
+def list_approvals(
+    status: ApprovalStatus | None = None, market: Market | None = None
+) -> list[Approval]:
+    result = []
+    for approval in _approvals.values():
+        if _expired(approval):
+            continue
+        if status is not None and approval.status != status:
+            continue
+        if market is not None and approval.market != market:
+            continue
+        result.append(approval)
+    return result
+
+
+def get_approval(approval_id: str) -> Approval | None:
+    approval = _approvals.get(approval_id)
+    if approval is not None and _expired(approval):
+        return None
+    return approval
+
+
+def decide_approval(
+    approval_id: str, decision: ApprovalStatus, decided_by: str
+) -> Approval:
+    """仅允许 REQUESTED -> APPROVED / REJECTED，不可翻转已决审批。"""
+    approval = get_approval(approval_id)
+    if approval is None:
+        raise KeyError(approval_id)
+    if approval.status != ApprovalStatus.REQUESTED:
+        raise ValueError(f"approval already decided: {approval.status}")
+    if decision not in (ApprovalStatus.APPROVED, ApprovalStatus.REJECTED):
+        raise ValueError(f"invalid decision: {decision}")
+    updated = approval.model_copy(update={
+        "status": decision,
+        "decided_by": decided_by,
+        "decided_at": datetime.now(UTC),
+    })
+    _approvals[approval_id] = updated
+    return updated
+
+
+def is_approved(approval_id: str) -> bool:
+    approval = get_approval(approval_id)
+    return approval is not None and approval.status == ApprovalStatus.APPROVED
+
+
+def _expired(approval: Approval) -> bool:
+    if approval.status == ApprovalStatus.REQUESTED:
+        if datetime.now(UTC) - approval.requested_at > APPROVAL_TTL:
+            expired = approval.model_copy(update={
+                "status": ApprovalStatus.EXPIRED
+            })
+            _approvals[approval.approval_id] = expired
+            return True
+    return False
+
+
+# ---- 二次硬风控：调用 risk-policy，失败关闭 ----
+
+def check_order_risk(base_url: str | None = None, **payload) -> dict:
+    """调用 risk-policy /v1/check-order。
+
+    任何网络或上游错误都必须抛出异常，由调用方拒绝订单（失败关闭），
+    绝不返回「通过」的猜测结果。
+    """
+    url = (base_url or RISK_POLICY_URL_DEFAULT).rstrip("/") + "/v1/check-order"
+    resp = httpx.post(url, json=payload, timeout=3.0)
+    resp.raise_for_status()
+    return resp.json()

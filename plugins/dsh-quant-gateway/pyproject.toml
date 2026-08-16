@@ -1,9 +1,9 @@
 [project]
-name = "risk-policy"
+name = "dsh-gateway-client"
 version = "0.1.0"
-description = "DSH Bot 全局风险预算与策略服务"
+description = "DSH 插件侧的 Quant Gateway 客户端：所有 Bot 访问量化系统的唯一通道"
 requires-python = ">=3.12"
-dependencies = ["fastapi>=0.111,<1", "uvicorn[standard]>=0.30,<1", "dsh-contracts"]
+dependencies = ["httpx>=0.27,<1", "dsh-contracts"]
 
 [build-system]
 requires = ["setuptools>=68"]

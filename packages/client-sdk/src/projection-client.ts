@@ -1,10 +1,13 @@
 import type {
   AccountSummary,
   Approval,
+  ApprovalStatus,
+  Experiment,
   HealthStatus,
   Market,
   Position,
   Signal,
+  StrategyCandidate,
 } from "./types.js";
 
 /** 面向前端的只读投影客户端。资金动作不经过此客户端，必须走审批流程。 */
@@ -37,5 +40,23 @@ export class ProjectionClient {
 
   getPendingApprovals(): Promise<Approval[]> {
     return this.get(`/v1/approvals?status=REQUESTED`);
+  }
+
+  /** 审批列表，可按状态过滤（如 status=REQUESTED）。 */
+  getApprovals(status?: ApprovalStatus): Promise<Approval[]> {
+    const query = status ? `?status=${status}` : "";
+    return this.get(`/v1/approvals${query}`);
+  }
+
+  /** 研究实验列表，可按市场过滤。 */
+  getExperiments(market?: Market): Promise<Experiment[]> {
+    const query = market ? `?market=${market}` : "";
+    return this.get(`/v1/experiments${query}`);
+  }
+
+  /** 策略候选列表，可按市场过滤。 */
+  getCandidates(market?: Market): Promise<StrategyCandidate[]> {
+    const query = market ? `?market=${market}` : "";
+    return this.get(`/v1/candidates${query}`);
   }
 }

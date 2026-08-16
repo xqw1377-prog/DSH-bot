@@ -1,3 +1,3 @@
-from quant_gateway.routers import control, orders, read_only
+from quant_gateway.routers import approvals, control, orders, read_only
 
-__all__ = ["read_only", "orders", "control"]
+__all__ = ["read_only", "orders", "control", "approvals"]

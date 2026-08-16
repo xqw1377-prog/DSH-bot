@@ -2,33 +2,53 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from dsh_contracts import ApprovalStatus, Market, OrderSide, RiskSnapshot
+from dsh_contracts import (
+    AccountSummary,
+    ApprovalStatus,
+    Market,
+    RiskSnapshot,
+)
 from fastapi.testclient import TestClient
 
+from quant_gateway import approval_store
 from quant_gateway.main import app
-from quant_gateway.routers.orders import register_approval, register_risk_snapshot
+from quant_gateway.routers import orders as orders_router
+from quant_gateway.routers.orders import register_risk_snapshot
 
 
 @pytest.fixture()
 def client():
-    from quant_gateway.adapters import register_adapter
-    from quant_gateway.adapters.base import MarketAdapter
-
-    class StubAdapter(MarketAdapter):
-        def get_health(self): ...
-        def get_positions(self, account_id=None): return []
-        def get_account_summary(self): return []
-        def get_signals(self): return []
-        def preview_order(self, intent): ...
-        def request_order(self, intent): return f"order-{intent['idempotency_key']}"
-        def get_order_status(self, order_id): return {"order_id": order_id}
-        def cancel_order(self, order_id): return {"order_id": order_id, "status": "CANCELLED"}
-        def pause_strategy(self, strategy_id): ...
-        def resume_strategy(self, strategy_id): ...
-        def emergency_stop(self, account_id=None): ...
-
-    register_adapter(Market.A_SHARE, StubAdapter())
+    # FakeAdapter 已由 conftest 的 reset_gateway_state 自动注册
     return TestClient(app)
+
+
+@pytest.fixture()
+def risk_pass(monkeypatch):
+    """让二次硬风控直接通过（risk-policy 的规则另由其自身测试覆盖）。"""
+    monkeypatch.setattr(
+        orders_router, "check_order_risk",
+        lambda base_url, **payload: {"passed": True, "limits_hit": []},
+    )
+
+
+@pytest.fixture()
+def risk_reject(monkeypatch):
+    monkeypatch.setattr(
+        orders_router, "check_order_risk",
+        lambda base_url, **payload: {"passed": False, "limits_hit": ["max_position"]},
+    )
+
+
+def approved_approval() -> str:
+    approval = approval_store.create_approval(
+        market=Market.A_SHARE,
+        requested_by_bot="a-stock-bot",
+        subject_type="order",
+        subject_id="sub-1",
+    )
+    return approval_store.decide_approval(
+        approval.approval_id, ApprovalStatus.APPROVED, "human"
+    ).approval_id
 
 
 def make_intent(**overrides) -> dict:
@@ -65,51 +85,72 @@ def make_snapshot(**overrides) -> RiskSnapshot:
     return RiskSnapshot(**base)
 
 
-def test_order_rejected_without_risk_snapshot(client):
-    register_approval("appr-1", ApprovalStatus.APPROVED)
+def test_order_rejected_without_risk_snapshot(client, risk_pass):
     resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
     assert resp.status_code == 422
     assert "fail-closed" in resp.json()["detail"]
 
 
-def test_order_rejected_when_limits_hit(client):
+def test_order_rejected_when_limits_hit(client, risk_pass):
     register_risk_snapshot(make_snapshot(limits_hit=["max_position"]))
-    register_approval("appr-1", ApprovalStatus.APPROVED)
     resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
     assert resp.status_code == 422
 
 
-def test_order_rejected_without_approved_approval(client):
+def test_order_rejected_when_risk_policy_rejects(client, risk_reject):
     register_risk_snapshot(make_snapshot())
-    register_approval("appr-1", ApprovalStatus.REQUESTED)
     resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
     assert resp.status_code == 422
+    assert "risk check failed" in resp.json()["detail"]
 
 
-def test_order_submitted_when_all_gates_pass(client):
+def test_order_rejected_when_risk_policy_unreachable(client, monkeypatch):
+    def unreachable(*args, **kwargs):
+        raise ConnectionError("risk-policy down")
+
+    monkeypatch.setattr(orders_router, "check_order_risk", unreachable)
     register_risk_snapshot(make_snapshot())
-    register_approval("appr-2", ApprovalStatus.APPROVED)
+    resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
+    assert resp.status_code == 503
+    assert "fail-closed" in resp.json()["detail"]
+
+
+def test_order_rejected_without_approved_approval(client, risk_pass):
+    register_risk_snapshot(make_snapshot())
+    pending = approval_store.create_approval(
+        market=Market.A_SHARE,
+        requested_by_bot="a-stock-bot",
+        subject_type="order",
+        subject_id="sub-1",
+    ).approval_id
     resp = client.post(
-        "/v1/markets/A_SHARE/orders", json=make_intent(approval_id="appr-2")
+        "/v1/markets/A_SHARE/orders", json=make_intent(approval_id=pending)
+    )
+    assert resp.status_code == 422
+
+
+def test_order_submitted_when_all_gates_pass(client, risk_pass):
+    register_risk_snapshot(make_snapshot())
+    resp = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(approval_id=approved_approval()),
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "SUBMITTED"
 
 
-def test_idempotency_replay_rejected(client):
+def test_idempotency_replay_rejected(client, risk_pass):
     register_risk_snapshot(make_snapshot())
-    register_approval("appr-3", ApprovalStatus.APPROVED)
-    body = make_intent(idempotency_key="dup-key", approval_id="appr-3")
+    body = make_intent(idempotency_key="dup-key", approval_id=approved_approval())
     assert client.post("/v1/markets/A_SHARE/orders", json=body).status_code == 200
     resp = client.post("/v1/markets/A_SHARE/orders", json=body)
     assert resp.status_code == 409
 
 
-def test_intent_validation_rejects_fuzzy_body(client):
+def test_intent_validation_rejects_fuzzy_body(client, risk_pass):
     register_risk_snapshot(make_snapshot())
-    register_approval("appr-4", ApprovalStatus.APPROVED)
     resp = client.post(
         "/v1/markets/A_SHARE/orders",
-        json=make_intent(idempotency_key="bad-1", approval_id="appr-4", quantity=None),
+        json=make_intent(idempotency_key="bad-1", quantity=None),
     )
     assert resp.status_code == 422

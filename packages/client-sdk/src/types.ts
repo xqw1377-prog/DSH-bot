@@ -33,6 +33,16 @@ export type StrategyStage =
 
 export type ApprovalStatus = "REQUESTED" | "APPROVED" | "REJECTED" | "EXPIRED";
 
+/** Bot 任务状态机，见 PRD 附录 A.3。 */
+export type TaskStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "WAITING_FOR_TOOL"
+  | "WAITING_FOR_APPROVAL"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
 export interface HealthStatus {
   market: Market;
   system_ok: boolean;
@@ -125,4 +135,30 @@ export interface Approval {
   subject_type: "order" | "strategy_promotion" | "risk_budget" | "control_action";
   subject_id: string;
   evidence_refs: string[];
+}
+
+/** 研究实验账本条目，见 PRD 10.4。实验环境无生产密钥。 */
+export interface Experiment {
+  experiment_id: string;
+  market: Market;
+  strategy_id: string;
+  hypothesis: string;
+  data_snapshot_id: string;
+  status: TaskStatus;
+  created_by_bot: string;
+  created_at: string;
+  result_ref?: string | null;
+}
+
+/** 策略晋级状态机条目，见 PRD 附录 A.1。单次回测不足以晋级：stage 推进必须附带证据引用。 */
+export interface StrategyCandidate {
+  candidate_id: string;
+  market: Market;
+  strategy_id: string;
+  strategy_version: string;
+  stage: StrategyStage;
+  experiment_id?: string | null;
+  evidence_refs: string[];
+  approval_id?: string | null;
+  updated_at: string;
 }

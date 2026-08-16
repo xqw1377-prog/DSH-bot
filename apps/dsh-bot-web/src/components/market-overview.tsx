@@ -1,8 +1,4 @@
-import { ProjectionClient } from "@dsh-bot/client-sdk";
-
-const client = new ProjectionClient(
-  process.env.PROJECTION_API_URL || "http://127.0.0.1:8004"
-);
+import { projection as client } from "@/lib/projection";
 
 export async function MarketOverview() {
   const [aShareHealth, cryptoHealth] = await Promise.all([

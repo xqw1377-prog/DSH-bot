@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from quant_gateway.routers import control, orders, read_only
+from quant_gateway.routers import approvals, control, orders, read_only
 
 app = FastAPI(
     title="Quant Gateway",
@@ -13,6 +13,7 @@ app = FastAPI(
 
 app.include_router(read_only.router, prefix="/v1", tags=["read-only"])
 app.include_router(orders.router, prefix="/v1", tags=["orders"])
+app.include_router(approvals.router, prefix="/v1", tags=["approvals"])
 app.include_router(control.router, prefix="/v1", tags=["control"])
 
 
