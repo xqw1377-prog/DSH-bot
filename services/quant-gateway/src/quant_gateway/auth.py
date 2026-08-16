@@ -46,6 +46,22 @@ def auth_enabled() -> bool:
     return bool(_load_principals())
 
 
+def enforce_startup_auth() -> None:
+    """启动检查：非开发环境必须配置 API key，否则拒绝启动。
+
+    开放模式（无鉴权）只能由 DSH_ENV=development 显式启用，
+    默认（未设置或 production）一律失败关闭。
+    """
+    env = os.environ.get("DSH_ENV", "production")
+    if env == "development":
+        return
+    if not auth_enabled():
+        raise RuntimeError(
+            "refusing to start: QUANT_GATEWAY_API_KEYS is not configured "
+            "and DSH_ENV is not 'development'; fail-closed"
+        )
+
+
 def _authenticate(x_api_key: str | None) -> Principal:
     if not x_api_key:
         raise HTTPException(status_code=401, detail="missing X-API-Key header")

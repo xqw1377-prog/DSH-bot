@@ -71,7 +71,8 @@ uvicorn quant_gateway.main:app --port 8001
 | 变量 | 说明 |
 |---|---|
 | `QUANT_GATEWAY_DB` | SQLite 数据库路径（审批、幂等键、审计日志持久化）；未设置时用内存，仅限本地开发 |
-| `QUANT_GATEWAY_API_KEYS` | API key 鉴权，分号分隔：`key/name:read,write;key2/name2:read`；未设置时开放（开发模式），生产必须配置 |
+| `QUANT_GATEWAY_API_KEYS` | API key 鉴权，分号分隔：`key/name:read,write;key2/name2:read` |
+| `DSH_ENV` | `development` 时允许无鉴权开放模式；默认（未设置/`production`）未配置 API key 将拒绝启动（失败关闭） |
 | `RISK_POLICY_URL` | risk-policy 服务地址，默认 `http://127.0.0.1:8003` |
 
 ### 测试与校验
@@ -87,7 +88,8 @@ CI（`.github/workflows/ci.yml`）在每次 push/PR 自动执行以上校验和�
 
 ```bash
 # 终端 1：Quant Gateway（本地纸面模式，不连真实交易所）
-DSH_LOCAL_PAPER=1 QUANT_GATEWAY_DB=/tmp/gw.db uvicorn quant_gateway.main:app --port 8001
+# DSH_ENV=development 显式启用开放模式（无鉴权），生产环境必须配置 API key
+DSH_ENV=development DSH_LOCAL_PAPER=1 QUANT_GATEWAY_DB=/tmp/gw.db uvicorn quant_gateway.main:app --port 8001
 
 # 终端 2：Crypto Bot —— DSH Session 加载 Profile，定时主动运行
 DSH_RUNTIME_DB=/tmp/runtime.db python scripts/run_crypto_bot.py --every 60

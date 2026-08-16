@@ -9,8 +9,9 @@ request_order / cancel_order 可改变资金状态，必须满足：
 - 返回权威订单 ID 或明确错误
 """
 
+import hashlib
+import json
 import os
-
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
@@ -60,15 +61,28 @@ def request_order(market: Market, intent: dict,
 
     adapter = get_adapter(market)
 
-    # 2. 幂等（持久化键日志：重启后重复请求仍不会重复下单）
+    # 2. 幂等：请求体哈希 + 持久化键日志。
+    # 相同键相同请求体 → 409 并返回已有订单；相同键不同请求体 → 409 冲突。
     idempotency_key = order_intent.idempotency_key
-    previous_order_id = storage.get_order_id_for_key(idempotency_key)
-    if previous_order_id is not None:
+    request_hash = hashlib.sha256(
+        json.dumps(order_intent.model_dump(mode="json"), sort_keys=True).encode()
+    ).hexdigest()
+    entry = storage.get_idempotency_entry(idempotency_key)
+    if entry is not None:
+        previous_order_id, previous_hash = entry
+        if previous_hash != request_hash:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "idempotency key reused with different request body; "
+                    "rejected"
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail=(
                 "duplicate idempotency key; no new order created; "
-                f"previous order_id={previous_order_id}"
+                f"previous order_id={previous_order_id or '(in flight)'}"
             ),
         )
 
@@ -119,16 +133,18 @@ def request_order(market: Market, intent: dict,
             detail=f"approval {order_intent.approval_id} is not APPROVED; order rejected",
         )
 
-    order_id = adapter.request_order(order_intent.model_dump(mode="json"))
-    if not storage.record_idempotency_key(idempotency_key, order_id):
-        # 并发竞态下的重复提交：撤回本单意图，返回既有订单 ID
+    # 6. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
+    if not storage.record_idempotency_key(idempotency_key, request_hash):
         raise HTTPException(
             status_code=409,
             detail=(
-                "duplicate idempotency key; no new order created; "
-                f"previous order_id={storage.get_order_id_for_key(idempotency_key)}"
+                "duplicate idempotency key (concurrent request won); "
+                "no new order created"
             ),
         )
+
+    order_id = adapter.request_order(order_intent.model_dump(mode="json"))
+    storage.finalize_idempotency_key(idempotency_key, order_id)
     audit.record(
         "order.submitted", principal.name, market.value, order_id,
         detail=f"intent={order_intent.idempotency_key} "

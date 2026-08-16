@@ -154,3 +154,57 @@ def test_intent_validation_rejects_fuzzy_body(client, risk_pass):
         json=make_intent(idempotency_key="bad-1", quantity=None),
     )
     assert resp.status_code == 422
+
+
+def test_same_key_different_body_conflicts(client, risk_pass):
+    register_risk_snapshot(make_snapshot())
+    approval_id = approved_approval()
+    first = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(idempotency_key="clash-key", approval_id=approval_id),
+    )
+    assert first.status_code == 200
+    # 同一幂等键但请求体不同（数量改变）→ 冲突拒绝
+    resp = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(
+            idempotency_key="clash-key", quantity="200", approval_id=approval_id
+        ),
+    )
+    assert resp.status_code == 409
+    assert "different request body" in resp.json()["detail"]
+
+
+def test_concurrent_duplicate_requests_submit_exactly_once(client, risk_pass):
+    """并发原子性：两个线程同时提交相同幂等键，只允许一笔订单。"""
+    import threading
+
+    from quant_gateway.adapters import get_adapter
+
+    register_risk_snapshot(make_snapshot())
+    body = make_intent(idempotency_key="race-key", approval_id=approved_approval())
+
+    barrier = threading.Barrier(4)
+
+    def slow_submit():
+        barrier.wait()  # 尽量同时进入
+        return client.post("/v1/markets/A_SHARE/orders", json=body)
+
+    threads_results: list = []
+    lock = threading.Lock()
+
+    def worker():
+        resp = slow_submit()
+        with lock:
+            threads_results.append(resp.status_code)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert threads_results.count(200) == 1
+    assert threads_results.count(409) == 3
+    adapter = get_adapter(Market.A_SHARE)
+    assert len(adapter.submitted) == 1  # 量化系统只收到一笔

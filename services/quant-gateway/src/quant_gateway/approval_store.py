@@ -25,22 +25,22 @@ def _row_to_approval(row) -> Approval:
 
 
 def _save(approval: Approval) -> Approval:
-    conn = storage.get_conn()
-    conn.execute(
-        """INSERT INTO approvals (approval_id, status, market, requested_at, payload)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(approval_id) DO UPDATE SET
-               status = excluded.status,
-               payload = excluded.payload""",
-        (
-            approval.approval_id,
-            approval.status.value,
-            approval.market.value,
-            approval.requested_at.isoformat(),
-            approval.model_dump_json(),
-        ),
-    )
-    conn.commit()
+    with storage.locked_conn() as conn:
+        conn.execute(
+            """INSERT INTO approvals (approval_id, status, market, requested_at, payload)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(approval_id) DO UPDATE SET
+                   status = excluded.status,
+                   payload = excluded.payload""",
+            (
+                approval.approval_id,
+                approval.status.value,
+                approval.market.value,
+                approval.requested_at.isoformat(),
+                approval.model_dump_json(),
+            ),
+        )
+        conn.commit()
     return approval
 
 
@@ -68,7 +68,9 @@ def list_approvals(
     status: ApprovalStatus | None = None, market: Market | None = None
 ) -> list[Approval]:
     result = []
-    for row in storage.get_conn().execute(f"SELECT {_COLUMNS} FROM approvals"):
+    with storage.locked_conn() as conn:
+        rows = conn.execute(f"SELECT {_COLUMNS} FROM approvals").fetchall()
+    for row in rows:
         approval = _row_to_approval(row)
         if _expired(approval):
             continue
@@ -81,9 +83,10 @@ def list_approvals(
 
 
 def get_approval(approval_id: str) -> Approval | None:
-    row = storage.get_conn().execute(
-        f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?", (approval_id,)
-    ).fetchone()
+    with storage.locked_conn() as conn:
+        row = conn.execute(
+            f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?", (approval_id,)
+        ).fetchone()
     if row is None:
         return None
     approval = _row_to_approval(row)

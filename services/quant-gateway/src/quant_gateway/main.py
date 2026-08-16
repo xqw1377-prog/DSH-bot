@@ -4,11 +4,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from quant_gateway import audit
+from quant_gateway.auth import enforce_startup_auth
 from quant_gateway.routers import approvals, control, orders, read_only
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    enforce_startup_auth()
     if os.environ.get("DSH_LOCAL_PAPER") == "1":
         from quant_gateway.adapters.paper import register_paper_adapters
 
