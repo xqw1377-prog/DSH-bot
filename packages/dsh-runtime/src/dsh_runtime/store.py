@@ -37,6 +37,21 @@ def _connect() -> sqlite3.Connection:
             payload     TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_events_type ON domain_events (event_type, occurred_at);
+
+        CREATE TABLE IF NOT EXISTS bot_tasks (
+            task_id         TEXT PRIMARY KEY,
+            bot             TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            status          TEXT NOT NULL,
+            subject_id      TEXT NOT NULL,
+            approval_id     TEXT,
+            order_id        TEXT,
+            idempotency_key TEXT,
+            payload         TEXT NOT NULL DEFAULT '{}',
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_bot_status ON bot_tasks (bot, status);
         """
     )
     conn.commit()

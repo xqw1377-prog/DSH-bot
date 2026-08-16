@@ -45,6 +45,25 @@ def _account_equity(adapter, account_id: str):
         return 0
 
 
+@router.post("/markets/{market}/risk-snapshots", status_code=201)
+def register_risk_snapshot_api(market: Market, snapshot: dict,
+                               principal: Principal = Depends(require_write)):
+    """注册风险快照。快照来源必须可信（如订单预览的计算结果），
+    提交订单时按 risk_snapshot_id 查验，查不到即失败关闭。"""
+    from pydantic import ValidationError as VE
+    try:
+        parsed = RiskSnapshot.model_validate(snapshot)
+    except VE as exc:
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
+    if parsed.market != market:
+        raise HTTPException(
+            status_code=422,
+            detail=f"snapshot market {parsed.market} does not match path market {market}",
+        )
+    register_risk_snapshot(parsed)
+    return {"risk_snapshot_id": parsed.risk_snapshot_id}
+
+
 @router.post("/markets/{market}/orders")
 def request_order(market: Market, intent: dict,
                   principal: Principal = Depends(require_write)):

@@ -67,7 +67,10 @@ class SignalFakeAdapter(MarketAdapter):
         ).model_dump(mode="json")
 
     def request_order(self, intent):
-        raise AssertionError("Agent 不允许直接下单")
+        # 经 Gateway 的 Paper 提交是合法路径；红线是不绕过网关
+        self.submitted = getattr(self, "submitted", [])
+        self.submitted.append(intent)
+        return f"{self.market.value}-ord-{len(self.submitted)}"
 
     def get_order_status(self, order_id):
         return {"order_id": order_id, "status": "FILLED"}
@@ -158,3 +161,87 @@ def test_weak_signal_skips_approval():
     run_once(session, agent)
     assert client.get("/v1/approvals").json() == []
     assert session.memory.has_tagged("signal:sig-001")  # 记录为已忽略
+
+
+def _approve(approval_id: str):
+    from dsh_contracts import ApprovalStatus
+    resp = client.post(
+        f"/v1/approvals/{approval_id}/decide",
+        json={"decision": "APPROVED", "decided_by": "alice"},
+    )
+    assert resp.status_code == 200
+
+
+def _make_risk_pass(monkeypatch):
+    from quant_gateway.routers import orders as orders_router
+    monkeypatch.setattr(
+        orders_router, "check_order_risk",
+        lambda base_url, **payload: {"passed": True, "limits_hit": []},
+    )
+
+
+def test_approved_signal_submits_paper_order(monkeypatch):
+    _make_risk_pass(monkeypatch)
+    agent, session = _agent_and_session()
+    run_once(session, agent)  # tick 1：预览 + 发起审批
+
+    approval_id = client.get("/v1/approvals?status=REQUESTED").json()[0]["approval_id"]
+    _approve(approval_id)  # 人工批准
+
+    run_once(session, agent)  # tick 2：恢复任务 → 提交 Paper 订单
+
+    submitted = session.events.query("order/submitted")
+    assert len(submitted) == 1
+    assert submitted[0]["payload"]["approval_id"] == approval_id
+
+    tasks = session.tasks.find_by_status("DONE")
+    assert len(tasks) == 1
+    assert tasks[0]["order_id"].startswith("CRYPTO-ord-")
+
+    # 审计日志：网关侧记录了订单提交
+    audit = client.get("/v1/audit").json()
+    assert any(e["action"] == "order.submitted" for e in audit)
+
+    # tick 3：任务已完成，不重复提交
+    run_once(session, agent)
+    assert len(session.events.query("order/submitted")) == 1
+
+
+def test_rejected_signal_never_submits(monkeypatch):
+    _make_risk_pass(monkeypatch)
+    agent, session = _agent_and_session()
+    run_once(session, agent)
+
+    approval_id = client.get("/v1/approvals?status=REQUESTED").json()[0]["approval_id"]
+    resp = client.post(
+        f"/v1/approvals/{approval_id}/decide",
+        json={"decision": "REJECTED", "decided_by": "alice"},
+    )
+    assert resp.status_code == 200
+
+    run_once(session, agent)
+    assert session.events.query("order/submitted") == []
+    assert len(session.tasks.find_by_status("REJECTED")) == 1
+
+
+def test_task_state_survives_runtime_restart(monkeypatch, tmp_path):
+    """Session 重启（记忆/任务库重开）后任务状态不丢。"""
+    monkeypatch.setenv("DSH_RUNTIME_DB", str(tmp_path / "runtime.db"))
+    _make_risk_pass(monkeypatch)
+    agent, session = _agent_and_session()
+    run_once(session, agent)
+
+    # 模拟重启：重置内存连接后重开同一 Session
+    from dsh_runtime import reset, BotSession, load_profile
+    reset()
+    session2 = BotSession.for_profile(
+        load_profile(PROFILES / "crypto-bot" / "profile.yaml")
+    )
+    pending = session2.tasks.find_by_status("AWAITING_APPROVAL")
+    assert len(pending) == 1  # 任务还在等待人工，不会重复发起审批
+
+    approval_id = pending[0]["approval_id"]
+    _approve(approval_id)
+    agent2, _ = _agent_and_session()
+    run_once(session2, agent2)  # 重启后第一个 tick 完成提交
+    assert len(session2.tasks.find_by_status("DONE")) == 1

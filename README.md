@@ -60,7 +60,7 @@ pip install -e packages/domain-contracts -e packages/dsh-runtime \
   -e services/quant-gateway -e services/strategy-evolution \
   -e services/risk-policy -e services/projection-api \
   -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
-  -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
+  -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief -e plugins/dsh-a-stock-agent -e plugins/dsh-market-chief \
   -e plugins/dsh-risk-auditor -e plugins/dsh-incident-center \
   -e plugins/dsh-a-stock-agent -e plugins/dsh-strategy-lab
 uvicorn quant_gateway.main:app --port 8001
@@ -84,20 +84,33 @@ python scripts/check_schemas.py     # 事件 schema 与 envelope 一致性
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 自动执行以上校验和前端构建。
 
-### 运行第一个真实 Bot（Crypto Bot on DSH）
+### 运行 DSH（Market Chief + Crypto Bot）
+
+多 Bot 统一经 DSH 的 Profile/Session/Schedule 机制运行，无独立调度器：
+
+```bash
+# 终端 1：Quant Gateway（本地纸面模式，不连真实交易所）
+DSH_ENV=development DSH_LOCAL_PAPER=1 QUANT_GATEWAY_DB=/tmp/gw.db uvicorn quant_gateway.main:app --port 8001
+
+# 终端 2：risk-policy（订单提交前的二次硬风控，不可达时网关失败关闭）
+uvicorn risk_policy.main:app --port 8003
+
+# 终端 3：DSH 双 Bot
+DSH_RUNTIME_DB=/tmp/runtime.db python scripts/run_dsh.py --every 60
+```
+
+Crypto Bot 闭环：健康检查 → 信号 → 订单预览 → 发起人工审批（任务持久化、
+记忆去重）→ 人工批准 → 注册风险快照 → 二次硬风控 → Paper 订单提交 →
+审计/事件/记忆留痕。拒绝、超时、网关不可达一律不下单（失败关闭）。
+Session 重启后任务从上次状态继续，不重复发起审批或下单。
 
 ```bash
 # 终端 1：Quant Gateway（本地纸面模式，不连真实交易所）
 # DSH_ENV=development 显式启用开放模式（无鉴权），生产环境必须配置 API key
 DSH_ENV=development DSH_LOCAL_PAPER=1 QUANT_GATEWAY_DB=/tmp/gw.db uvicorn quant_gateway.main:app --port 8001
 
-# 终端 2：Crypto Bot —— DSH Session 加载 Profile，定时主动运行
-DSH_RUNTIME_DB=/tmp/runtime.db python scripts/run_crypto_bot.py --every 60
+# 终端 2/3 见下一节「运行 DSH」，run_dsh.py 已取代单 Bot 入口
 ```
-
-每个 tick：检查市场健康 → 拉取量化系统信号 → 强度达标且未处理过的信号
-生成订单预览 → 发起人工审批（记忆去重，同一信号只发起一次）→ 事件与记忆持久化。
-审批在前端 http://localhost:3000/approvals 或 `POST /v1/approvals/{id}/decide` 处理。
 
 ### 前端（Node 20+ / pnpm）
 

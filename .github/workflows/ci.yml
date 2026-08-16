@@ -20,7 +20,7 @@ jobs:
             -e services/quant-gateway -e services/strategy-evolution \
             -e services/risk-policy -e services/projection-api \
             -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
-            -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
+            -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief -e plugins/dsh-market-chief \
             -e plugins/dsh-risk-auditor -e plugins/dsh-incident-center \
             -e plugins/dsh-a-stock-agent -e plugins/dsh-strategy-lab
           pip install pytest

@@ -1,0 +1,13 @@
+[project]
+name = "dsh-market-chief"
+version = "0.1.0"
+description = "总控 Bot 插件：跨市场健康汇总、待审批事项汇总与风险告警，不做任何资金动作"
+requires-python = ">=3.12"
+dependencies = ["dsh-gateway-client", "dsh-runtime"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
