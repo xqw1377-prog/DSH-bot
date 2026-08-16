@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -e packages/domain-contracts \
+            -e packages/dsh-runtime \
+            -e services/quant-gateway -e services/strategy-evolution \
+            -e services/risk-policy -e services/projection-api \
+            -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
+            -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
+            -e plugins/dsh-risk-auditor -e plugins/dsh-incident-center \
+            -e plugins/dsh-a-stock-agent -e plugins/dsh-strategy-lab
+          pip install pytest
+      - name: Schema compatibility check
+        run: python scripts/check_schemas.py
+      - name: Tests
+        run: pytest services/ plugins/ packages/ -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm -r lint
+      - name: Build
+        run: pnpm --filter dsh-bot-web build

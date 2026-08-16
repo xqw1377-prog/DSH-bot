@@ -6,11 +6,12 @@
 - 超时未决的审批自动过期（EXPIRED）
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from dsh_contracts import ApprovalStatus, Market
-from quant_gateway import approval_store
+from quant_gateway import approval_store, audit
+from quant_gateway.auth import Principal, require_read, require_write
 
 router = APIRouter()
 
@@ -37,7 +38,8 @@ def list_approvals(status: ApprovalStatus | None = None, market: Market | None =
 
 
 @router.post("/approvals", status_code=201)
-def create_approval(req: ApprovalCreate):
+def create_approval(req: ApprovalCreate,
+                    principal: Principal = Depends(require_write)):
     approval = approval_store.create_approval(
         market=req.market,
         requested_by_bot=req.requested_by_bot,
@@ -45,6 +47,9 @@ def create_approval(req: ApprovalCreate):
         subject_id=req.subject_id,
         evidence_refs=req.evidence_refs,
     )
+    audit.record("approval.requested", f"bot:{req.requested_by_bot}",
+                 market=req.market.value, subject_id=req.subject_id,
+                 detail=f"approval_id={approval.approval_id}")
     return approval.model_dump(mode="json")
 
 
@@ -57,7 +62,8 @@ def get_approval(approval_id: str):
 
 
 @router.post("/approvals/{approval_id}/decide")
-def decide(approval_id: str, req: ApprovalDecision):
+def decide(approval_id: str, req: ApprovalDecision,
+           principal: Principal = Depends(require_write)):
     try:
         approval = approval_store.decide_approval(
             approval_id, req.decision, req.decided_by
@@ -66,4 +72,8 @@ def decide(approval_id: str, req: ApprovalDecision):
         raise HTTPException(status_code=404, detail="approval not found") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(f"approval.{req.decision.value.lower()}",
+                 actor=f"human:{req.decided_by}", market=approval.market.value,
+                 subject_id=approval_id,
+                 detail=f"via key '{principal.name}'")
     return approval.model_dump(mode="json")

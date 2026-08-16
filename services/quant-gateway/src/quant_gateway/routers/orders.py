@@ -12,19 +12,18 @@ request_order / cancel_order 可改变资金状态，必须满足：
 import os
 
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
 from dsh_contracts import Market, OrderIntent, RiskSnapshot
+from quant_gateway import audit, storage
 from quant_gateway.adapters import get_adapter
 from quant_gateway.approval_store import check_order_risk, is_approved
+from quant_gateway.auth import Principal, require_write
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_write)])
 
 RISK_POLICY_URL = os.environ.get("RISK_POLICY_URL", "http://127.0.0.1:8003")
-
-# 内存中的幂等键日志，生产应替换为持久化 + TTL。
-_seen_idempotency_keys: dict[str, str] = {}  # key -> order_id
 
 # 内存中的风险快照；生产应由 risk-policy 生成并持久化。
 _risk_snapshots: dict[str, RiskSnapshot] = {}
@@ -46,7 +45,8 @@ def _account_equity(adapter, account_id: str):
 
 
 @router.post("/markets/{market}/orders")
-def request_order(market: Market, intent: dict):
+def request_order(market: Market, intent: dict,
+                  principal: Principal = Depends(require_write)):
     # 1. 契约校验：拒绝模糊或不完整的订单意图
     try:
         order_intent = OrderIntent.model_validate(intent)
@@ -60,14 +60,15 @@ def request_order(market: Market, intent: dict):
 
     adapter = get_adapter(market)
 
-    # 2. 幂等
+    # 2. 幂等（持久化键日志：重启后重复请求仍不会重复下单）
     idempotency_key = order_intent.idempotency_key
-    if idempotency_key in _seen_idempotency_keys:
+    previous_order_id = storage.get_order_id_for_key(idempotency_key)
+    if previous_order_id is not None:
         raise HTTPException(
             status_code=409,
             detail=(
                 "duplicate idempotency key; no new order created; "
-                f"previous order_id={_seen_idempotency_keys[idempotency_key]}"
+                f"previous order_id={previous_order_id}"
             ),
         )
 
@@ -119,10 +120,27 @@ def request_order(market: Market, intent: dict):
         )
 
     order_id = adapter.request_order(order_intent.model_dump(mode="json"))
-    _seen_idempotency_keys[idempotency_key] = order_id
+    if not storage.record_idempotency_key(idempotency_key, order_id):
+        # 并发竞态下的重复提交：撤回本单意图，返回既有订单 ID
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "duplicate idempotency key; no new order created; "
+                f"previous order_id={storage.get_order_id_for_key(idempotency_key)}"
+            ),
+        )
+    audit.record(
+        "order.submitted", principal.name, market.value, order_id,
+        detail=f"intent={order_intent.idempotency_key} "
+               f"approval={order_intent.approval_id} "
+               f"{order_intent.side} {order_intent.symbol} {order_intent.quantity}",
+    )
     return {"order_id": order_id, "status": "SUBMITTED"}
 
 
 @router.post("/markets/{market}/orders/{order_id}/cancel")
-def cancel_order(market: Market, order_id: str):
-    return get_adapter(market).cancel_order(order_id)
+def cancel_order(market: Market, order_id: str,
+                 principal: Principal = Depends(require_write)):
+    result = get_adapter(market).cancel_order(order_id)
+    audit.record("order.cancelled", principal.name, market.value, order_id)
+    return result

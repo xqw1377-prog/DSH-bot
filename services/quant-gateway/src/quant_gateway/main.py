@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from quant_gateway import audit
 from quant_gateway.routers import approvals, control, orders, read_only
 
 
@@ -13,6 +14,7 @@ async def lifespan(_app: FastAPI):
 
         register_paper_adapters()
     yield
+
 
 app = FastAPI(
     title="Quant Gateway",
@@ -28,6 +30,7 @@ app.include_router(read_only.router, prefix="/v1", tags=["read-only"])
 app.include_router(orders.router, prefix="/v1", tags=["orders"])
 app.include_router(approvals.router, prefix="/v1", tags=["approvals"])
 app.include_router(control.router, prefix="/v1", tags=["control"])
+app.include_router(audit.router, prefix="/v1", tags=["audit"])
 
 
 @app.get("/healthz")

@@ -1,7 +1,8 @@
 """审批存储与风控策略调用。
 
-内存实现，生产应替换为持久化存储（带 TTL 与审计）。
 审批是资金动作的门禁：只有状态为 APPROVED 的审批才能放行订单。
+审批账本持久化到 SQLite（见 storage.py），失败关闭：存储不可用时
+抛异常，由调用方拒绝资金动作。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -10,12 +11,37 @@ from uuid import uuid4
 import httpx
 from dsh_contracts import Approval, ApprovalStatus, Market
 
+from quant_gateway import storage
+
 RISK_POLICY_URL_DEFAULT = "http://127.0.0.1:8003"
 # 审批有效期：超时未决的审批视为 EXPIRED，防止陈旧审批被滥用
 APPROVAL_TTL = timedelta(minutes=30)
 
-# 内存审批账本
-_approvals: dict[str, Approval] = {}
+_COLUMNS = "approval_id, status, market, requested_at, payload"
+
+
+def _row_to_approval(row) -> Approval:
+    return Approval.model_validate_json(row[4])
+
+
+def _save(approval: Approval) -> Approval:
+    conn = storage.get_conn()
+    conn.execute(
+        """INSERT INTO approvals (approval_id, status, market, requested_at, payload)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(approval_id) DO UPDATE SET
+               status = excluded.status,
+               payload = excluded.payload""",
+        (
+            approval.approval_id,
+            approval.status.value,
+            approval.market.value,
+            approval.requested_at.isoformat(),
+            approval.model_dump_json(),
+        ),
+    )
+    conn.commit()
+    return approval
 
 
 def create_approval(
@@ -35,15 +61,15 @@ def create_approval(
         subject_id=subject_id,
         evidence_refs=evidence_refs or [],
     )
-    _approvals[approval.approval_id] = approval
-    return approval
+    return _save(approval)
 
 
 def list_approvals(
     status: ApprovalStatus | None = None, market: Market | None = None
 ) -> list[Approval]:
     result = []
-    for approval in _approvals.values():
+    for row in storage.get_conn().execute(f"SELECT {_COLUMNS} FROM approvals"):
+        approval = _row_to_approval(row)
         if _expired(approval):
             continue
         if status is not None and approval.status != status:
@@ -55,8 +81,13 @@ def list_approvals(
 
 
 def get_approval(approval_id: str) -> Approval | None:
-    approval = _approvals.get(approval_id)
-    if approval is not None and _expired(approval):
+    row = storage.get_conn().execute(
+        f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?", (approval_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    approval = _row_to_approval(row)
+    if _expired(approval):
         return None
     return approval
 
@@ -72,13 +103,11 @@ def decide_approval(
         raise ValueError(f"approval already decided: {approval.status}")
     if decision not in (ApprovalStatus.APPROVED, ApprovalStatus.REJECTED):
         raise ValueError(f"invalid decision: {decision}")
-    updated = approval.model_copy(update={
+    return _save(approval.model_copy(update={
         "status": decision,
         "decided_by": decided_by,
         "decided_at": datetime.now(UTC),
-    })
-    _approvals[approval_id] = updated
-    return updated
+    }))
 
 
 def is_approved(approval_id: str) -> bool:
@@ -89,12 +118,14 @@ def is_approved(approval_id: str) -> bool:
 def _expired(approval: Approval) -> bool:
     if approval.status == ApprovalStatus.REQUESTED:
         if datetime.now(UTC) - approval.requested_at > APPROVAL_TTL:
-            expired = approval.model_copy(update={
-                "status": ApprovalStatus.EXPIRED
-            })
-            _approvals[approval.approval_id] = expired
+            _save(approval.model_copy(update={"status": ApprovalStatus.EXPIRED}))
             return True
     return False
+
+
+def reset() -> None:
+    """测试辅助：清空审批账本。"""
+    storage.reset()
 
 
 # ---- 二次硬风控：调用 risk-policy，失败关闭 ----

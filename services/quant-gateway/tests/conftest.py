@@ -80,9 +80,8 @@ def reset_gateway_state():
     from quant_gateway import approval_store
 
     _adapters.clear()
-    orders._seen_idempotency_keys.clear()
     orders._risk_snapshots.clear()
-    approval_store._approvals.clear()
+    approval_store.reset()
     register_adapter(Market.A_SHARE, FakeAdapter(Market.A_SHARE))
     register_adapter(Market.CRYPTO, FakeAdapter(Market.CRYPTO))
     yield
