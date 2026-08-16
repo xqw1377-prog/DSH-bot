@@ -3,25 +3,44 @@
 验收标准「Session 重启后任务状态不丢」：审批、下单等跨 tick 的
 多阶段动作建模为任务，状态落 SQLite，重启后 Agent 从上次状态继续，
 绝不因失忆重复发起审批或重复下单。
+
+订单任务终态：仅在订单达到终态并完成账户对账后进入 RECONCILED。
+SUBMITTED / ACKNOWLEDGED / FILLED 都不是任务终态。
 """
 
 import json
 from datetime import UTC, datetime
 
-# 任务只能沿主链单步推进；终态不可逆
+# 任务只能沿主链推进；终态不可逆
 _TRANSITIONS: dict[str, set[str]] = {
     "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED"},
     "PREVIEWED": {"AWAITING_APPROVAL", "FAILED"},
     "AWAITING_APPROVAL": {"APPROVED_SUBMITTING", "REJECTED", "EXPIRED", "FAILED"},
     "APPROVED_SUBMITTING": {"SUBMITTED", "FAILED"},
-    "SUBMITTED": {"DONE", "FAILED"},
+    # 订单生命周期（对账前均非终态）
+    "SUBMITTED": {
+        "ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED",
+        "CANCELLED", "ORDER_REJECTED", "FAILED",
+    },
+    "ACKNOWLEDGED": {
+        "PARTIALLY_FILLED", "FILLED", "CANCELLED", "ORDER_REJECTED", "FAILED",
+    },
+    "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELLED", "FAILED"},
+    "FILLED": {"RECONCILED", "FAILED"},
+    "RECONCILED": set(),
     "FAILED": set(),
     "REJECTED": set(),
     "EXPIRED": set(),
+    "CANCELLED": set(),
+    "ORDER_REJECTED": set(),
+    # DONE 保留兼容；新路径以 RECONCILED 为成功终态
     "DONE": set(),
 }
 
-TERMINAL = {"DONE", "FAILED", "REJECTED", "EXPIRED"}
+TERMINAL = {
+    "RECONCILED", "FAILED", "REJECTED", "EXPIRED",
+    "CANCELLED", "ORDER_REJECTED", "DONE",
+}
 
 
 class TaskError(ValueError):

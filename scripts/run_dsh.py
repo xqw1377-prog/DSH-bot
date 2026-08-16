@@ -47,17 +47,29 @@ def build_agents(gateway_url: str, api_key: str | None, account: str,
 
 
 def main() -> int:
+    import os
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--gateway", default="http://127.0.0.1:8001")
-    parser.add_argument("--api-key", default=None)
+    parser.add_argument("--gateway", default=os.environ.get(
+        "QUANT_GATEWAY_URL", "http://127.0.0.1:8001"
+    ))
+    parser.add_argument("--api-key", default=os.environ.get("QUANT_GATEWAY_API_KEY"))
     parser.add_argument("--every", type=float, default=60.0)
-    parser.add_argument("--account", default="paper-crypto-001")
-    parser.add_argument("--min-strength", type=float, default=0.6)
+    parser.add_argument(
+        "--account",
+        default=(
+            os.environ.get("DSH_CRYPTO_ACCOUNT_ID")
+            or os.environ.get("PAPER_CRYPTO_ACCOUNT_ID")
+            or "paper-crypto-001"
+        ),
+    )
+    parser.add_argument("--min-strength", type=float, default=float(
+        os.environ.get("DSH_CRYPTO_MIN_STRENGTH", "0.6")
+    ))
     parser.add_argument("--db", default=None, help="记忆/事件/任务 SQLite 路径")
     args = parser.parse_args()
 
     if args.db:
-        import os
         os.environ["DSH_RUNTIME_DB"] = args.db
 
     runners = []
@@ -68,7 +80,7 @@ def main() -> int:
         runners.append((BotSession.for_profile(profile), agent))
 
     print(f"[dsh] 启动 {len(runners)} 个 Bot：{[a.name for _, a in runners]}，"
-          f"每 {args.every}s 一轮，Ctrl-C 停止")
+          f"account={args.account} 每 {args.every}s 一轮，Ctrl-C 停止")
     try:
         while True:
             for session, agent in runners:

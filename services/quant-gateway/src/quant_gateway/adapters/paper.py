@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import count
 
@@ -51,11 +51,13 @@ class PaperAdapter(MarketAdapter):
         self.stopped = False
         self._account_id = paper_account_id(market)
         self._currency = "CNY" if market == Market.A_SHARE else "USDT"
-        self._symbols = (
-            (("600519", Decimal("120"), Decimal("1680.50")),)
+        symbol, qty, price = (
+            ("600519", Decimal("120"), Decimal("1680.50"))
             if market == Market.A_SHARE
-            else (("BTCUSDT", Decimal("0.35"), Decimal("67420.00")),)
+            else ("BTCUSDT", Decimal("0.35"), Decimal("67420.00"))
         )
+        self._symbol, self._qty, self._price = symbol, qty, price
+        self._cash = Decimal("1048340") if market == Market.A_SHARE else Decimal("58403")
         self._orders: dict[str, dict] = {}
 
     def get_health(self) -> HealthStatus:
@@ -77,25 +79,23 @@ class PaperAdapter(MarketAdapter):
             Position(
                 market=self.market,
                 account_id=self._account_id,
-                symbol=symbol,
-                quantity=qty,
-                available_quantity=qty,
+                symbol=self._symbol,
+                quantity=self._qty,
+                available_quantity=self._qty,
                 frozen_quantity=Decimal("0"),
-                avg_cost=cost,
+                avg_cost=self._price,
                 currency=self._currency,
                 as_of=_now(),
             )
-            for symbol, qty, cost in self._symbols
         ]
 
     def get_account_summary(self) -> list[AccountSummary]:
-        equity = Decimal("1250000") if self.market == Market.A_SHARE else Decimal("82000")
-        cash = Decimal("1048340") if self.market == Market.A_SHARE else Decimal("58403")
+        equity = self._cash + self._qty * self._price
         return [
             AccountSummary(
                 market=self.market,
                 account_id=self._account_id,
-                cash=cash,
+                cash=self._cash,
                 equity=equity,
                 margin_used=None if self.market == Market.A_SHARE else Decimal("4100"),
                 currency=self._currency,
@@ -105,8 +105,8 @@ class PaperAdapter(MarketAdapter):
         ]
 
     def get_signals(self) -> list[Signal]:
-        symbol = self._symbols[0][0]
-        # 强度高于默认 min_strength(0.6)，保证本地冒烟可触发审批
+        # 强度高于默认 min_strength(0.6)；valid_until 留足余量供审批后再校验
+        now = _now()
         return [
             Signal(
                 signal_id=f"{self.market.value}-sig-paper-1",
@@ -117,11 +117,11 @@ class PaperAdapter(MarketAdapter):
                     else "funding-basis-crypto"
                 ),
                 strategy_version="0.1.0-paper",
-                symbol=symbol,
+                symbol=self._symbol,
                 side=OrderSide.BUY,
                 strength=0.75,
-                generated_at=_now(),
-                valid_until=_now(),
+                generated_at=now,
+                valid_until=now + timedelta(hours=24),
                 data_snapshot_id="paper-data-1",
             )
         ]
@@ -130,13 +130,17 @@ class PaperAdapter(MarketAdapter):
         order_intent = (
             intent if isinstance(intent, OrderIntent) else OrderIntent.model_validate(intent)
         )
-        notional = order_intent.quantity * Decimal("100")
+        notional = order_intent.quantity * self._price
         risk = RiskSnapshot(
             risk_snapshot_id=order_intent.risk_snapshot_id,
             market=order_intent.market,
             account_id=order_intent.account_id,
-            position_before=Decimal("0"),
-            position_after=order_intent.quantity,
+            position_before=self._qty,
+            position_after=self._qty + (
+                order_intent.quantity
+                if order_intent.side == OrderSide.BUY
+                else -order_intent.quantity
+            ),
             risk_budget_delta=notional,
             worst_case_loss=notional * Decimal("0.01"),
             limits_hit=[],
@@ -157,7 +161,7 @@ class PaperAdapter(MarketAdapter):
                 f"expected={self._account_id}"
             )
         order_id = f"{self.market.value}-paper-{next(self._ids)}"
-        avg_price = self._symbols[0][2]
+        avg_price = self._price
         filled_at = _now().isoformat()
         record = {
             "order_id": order_id,
@@ -176,6 +180,13 @@ class PaperAdapter(MarketAdapter):
         self.submitted.append(payload)
         self._orders[order_id] = record
         storage.save_paper_order(order_id, self.market.value, record)
+        quantity = Decimal(str(payload.get("quantity", "0")))
+        if payload.get("side") == "BUY":
+            self._qty += quantity
+            self._cash -= quantity * avg_price
+        else:
+            self._qty -= quantity
+            self._cash += quantity * avg_price
         return order_id
 
     def get_order_status(self, order_id: str) -> dict:
