@@ -12,6 +12,7 @@ from typing import Protocol
 
 from dsh_runtime.profile import Profile
 from dsh_runtime.store import EventLog, Memory
+from dsh_runtime.tasks import TaskStore
 
 
 class Agent(Protocol):
@@ -27,6 +28,7 @@ class BotSession:
     profile: Profile
     memory: Memory
     events: EventLog
+    tasks: TaskStore
 
     @classmethod
     def for_profile(cls, profile: Profile) -> "BotSession":
@@ -34,6 +36,7 @@ class BotSession:
             profile=profile,
             memory=Memory(bot=profile.name),
             events=EventLog(),
+            tasks=TaskStore(bot=profile.name),
         )
 
     def use(self, tool: str) -> None:

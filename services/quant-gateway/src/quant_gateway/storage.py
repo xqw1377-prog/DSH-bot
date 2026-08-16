@@ -65,9 +65,38 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_audit_occurred_at
             ON audit_log (occurred_at);
+        CREATE TABLE IF NOT EXISTS paper_orders (
+            order_id  TEXT PRIMARY KEY,
+            market    TEXT NOT NULL,
+            payload   TEXT NOT NULL
+        );
         """
     )
     conn.commit()
+
+
+def save_paper_order(order_id: str, market: str, payload: dict) -> None:
+    import json
+
+    with locked_conn() as conn:
+        conn.execute(
+            """INSERT INTO paper_orders (order_id, market, payload)
+               VALUES (?, ?, ?)
+               ON CONFLICT(order_id) DO UPDATE SET payload = excluded.payload""",
+            (order_id, market, json.dumps(payload, ensure_ascii=False)),
+        )
+        conn.commit()
+
+
+def get_paper_order(order_id: str) -> dict | None:
+    import json
+
+    with locked_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM paper_orders WHERE order_id = ?",
+            (order_id,),
+        ).fetchone()
+    return json.loads(row[0]) if row else None
 
 
 def reset() -> None:
