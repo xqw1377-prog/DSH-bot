@@ -10,10 +10,19 @@
 
 import os
 import sqlite3
+import threading
+from contextlib import contextmanager
 
-# 单连接 + check_same_thread=False：FastAPI 默认线程池执行同步路由，
-# SQLite 以串行写入为主，避免引入连接池复杂度。
+# 单连接 + 全局锁串行化：FastAPI 默认线程池执行同步路由，
+# sqlite3 连接不允许跨线程并发使用，所有访问必须持锁。
 _conn: sqlite3.Connection | None = None
+_lock = threading.RLock()
+
+
+@contextmanager
+def locked_conn():
+    with _lock:
+        yield get_conn()
 
 
 def get_conn() -> sqlite3.Connection:
@@ -39,9 +48,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_approvals_status
             ON approvals (status);
         CREATE TABLE IF NOT EXISTS idempotency_keys (
-            key        TEXT PRIMARY KEY,
-            order_id   TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            key          TEXT PRIMARY KEY,
+            order_id     TEXT,
+            request_hash TEXT NOT NULL,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         );
         CREATE TABLE IF NOT EXISTS audit_log (
             audit_id    TEXT PRIMARY KEY,
@@ -64,26 +74,46 @@ def reset() -> None:
     """测试辅助：丢弃当前连接，恢复干净状态。"""
     global _conn
     if _conn is not None:
-        _conn.close()
-        _conn = None
+            _conn.close()
+            _conn = None
 
 
-def record_idempotency_key(key: str, order_id: str) -> bool:
-    """写入幂等键。键已存在时返回 False（重复提交），不覆盖原 order_id。"""
-    conn = get_conn()
-    try:
+def record_idempotency_key(key: str, request_hash: str) -> bool:
+    """原子抢占幂等键（INSERT，主键唯一约束保证并发下只有一个成功）。
+
+    抢占成功返回 True，调用方继续提交订单并通过 finalize 回填 order_id；
+    键已存在返回 False（重复或并发请求）。
+    """
+    with locked_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO idempotency_keys (key, request_hash) VALUES (?, ?)",
+                (key, request_hash),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def finalize_idempotency_key(key: str, order_id: str) -> None:
+    """提交成功后回填权威订单 ID。"""
+    with locked_conn() as conn:
         conn.execute(
-            "INSERT INTO idempotency_keys (key, order_id) VALUES (?, ?)",
-            (key, order_id),
+            "UPDATE idempotency_keys SET order_id = ? WHERE key = ?", (order_id, key)
         )
         conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
+
+
+def get_idempotency_entry(key: str) -> tuple[str | None, str] | None:
+    """返回 (order_id, request_hash)。order_id 为空表示有在途请求。"""
+    with locked_conn() as conn:
+        row = conn.execute(
+            "SELECT order_id, request_hash FROM idempotency_keys WHERE key = ?", (key,)
+        ).fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def get_order_id_for_key(key: str) -> str | None:
-    row = get_conn().execute(
-        "SELECT order_id FROM idempotency_keys WHERE key = ?", (key,)
-    ).fetchone()
-    return row[0] if row else None
+    entry = get_idempotency_entry(key)
+    return entry[0] if entry else None

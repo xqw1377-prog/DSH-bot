@@ -40,10 +40,34 @@ def test_approvals_survive_restart(tmp_path, monkeypatch):
 
 def test_idempotency_survives_restart(tmp_path, monkeypatch):
     _persisted_db(tmp_path, monkeypatch)
-    assert storage.record_idempotency_key("key-1", "ord-1")
+    assert storage.record_idempotency_key("key-1", "hash-a")
+    storage.finalize_idempotency_key("key-1", "ord-1")
     storage.reset()
     assert storage.get_order_id_for_key("key-1") == "ord-1"
-    assert not storage.record_idempotency_key("key-1", "ord-2")  # 重复插入被拒
+    assert not storage.record_idempotency_key("key-1", "hash-a")  # 重复插入被拒
+    assert not storage.record_idempotency_key("key-1", "hash-b")  # 不同请求体同样被拒
+
+
+def test_gateway_refuses_to_start_without_auth_in_production(monkeypatch):
+    from quant_gateway.auth import enforce_startup_auth
+
+    monkeypatch.delenv("QUANT_GATEWAY_API_KEYS", raising=False)
+    monkeypatch.delenv("DSH_ENV", raising=False)
+    with pytest.raises(RuntimeError, match="refusing to start"):
+        enforce_startup_auth()
+
+    monkeypatch.setenv("DSH_ENV", "production")
+    with pytest.raises(RuntimeError, match="refusing to start"):
+        enforce_startup_auth()
+
+    # 开放模式只能由明确的 development 环境启用
+    monkeypatch.setenv("DSH_ENV", "development")
+    enforce_startup_auth()
+
+    # 配置了 key 则生产环境可启动
+    monkeypatch.delenv("DSH_ENV", raising=False)
+    monkeypatch.setenv("QUANT_GATEWAY_API_KEYS", "k/prod:read,write")
+    enforce_startup_auth()
 
 
 def test_audit_trail_recorded(tmp_path, monkeypatch):

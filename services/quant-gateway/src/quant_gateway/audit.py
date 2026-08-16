@@ -23,9 +23,9 @@ def record(
     outcome: str = "OK",
     detail: str | None = None,
 ) -> None:
-    conn = storage.get_conn()
-    conn.execute(
-        """INSERT INTO audit_log
+    with storage.locked_conn() as conn:
+        conn.execute(
+            """INSERT INTO audit_log
            (audit_id, occurred_at, actor, action, market, subject_id, outcome, detail)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
@@ -36,10 +36,10 @@ def record(
             market,
             subject_id,
             outcome,
-            detail,
-        ),
-    )
-    conn.commit()
+                detail,
+            ),
+        )
+        conn.commit()
 
 
 @router.get("/audit", dependencies=[Depends(require_read)])
@@ -54,7 +54,8 @@ def list_audit(limit: int = 100, actor: str | None = None):
         params.append(actor)
     sql += " ORDER BY occurred_at DESC LIMIT ?"
     params.append(limit)
-    rows = storage.get_conn().execute(sql, params).fetchall()
+    with storage.locked_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
     keys = ("audit_id", "occurred_at", "actor", "action", "market",
             "subject_id", "outcome", "detail")
     return [dict(zip(keys, r)) for r in rows]
