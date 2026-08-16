@@ -1,0 +1,13 @@
+[project]
+name = "dsh-crypto-agent"
+version = "0.1.0"
+description = "数字资产 Bot 插件：只读监控信号，生成订单预览并发起人工审批，绝不直接下单"
+requires-python = ">=3.12"
+dependencies = ["dsh-gateway-client", "dsh-trade-approval", "dsh-contracts"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
