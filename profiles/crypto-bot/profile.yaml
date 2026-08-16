@@ -8,6 +8,7 @@ primary_tools:
   - preview_order
   - query_approvals
   - query_order_status
+  - query_accounts
   - submit_order
 prohibited:
   - direct_order

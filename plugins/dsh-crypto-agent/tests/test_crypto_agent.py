@@ -59,7 +59,7 @@ class SignalFakeAdapter(MarketAdapter):
             intent=intent, estimated_cost="650", estimated_slippage="0.5",
             risk=RiskSnapshot(
                 risk_snapshot_id="rs-preview", market=self.market,
-                account_id="crypto-paper-1",
+                account_id="paper-crypto-001",
                 position_before="0", position_after="0.01",
                 risk_budget_delta="6.5", worst_case_loss="6.5",
                 as_of=datetime.now(UTC),
@@ -73,7 +73,15 @@ class SignalFakeAdapter(MarketAdapter):
         return f"{self.market.value}-ord-{len(self.submitted)}"
 
     def get_order_status(self, order_id):
-        return {"order_id": order_id, "status": "FILLED"}
+        return {
+            "order_id": order_id,
+            "status": "FILLED",
+            "symbol": "BTC/USDT",
+            "filled_quantity": "0.01",
+            "avg_price": "65000",
+            "filled_at": datetime.now(UTC).isoformat(),
+            "fees": "0",
+        }
 
     def cancel_order(self, order_id):
         return {"order_id": order_id, "status": "CANCELLED"}
@@ -114,7 +122,7 @@ def _agent_and_session():
 
     from dsh_crypto_agent import CryptoAgent
     agent = CryptoAgent(gateway=gateway, approvals=approvals,
-                        account_id="crypto-paper-1")
+                        account_id="paper-crypto-001")
     profile = load_profile(PROFILES / "crypto-bot" / "profile.yaml")
     return agent, BotSession.for_profile(profile)
 
@@ -194,7 +202,11 @@ def test_approved_signal_submits_paper_order(monkeypatch):
     assert len(submitted) == 1
     assert submitted[0]["payload"]["approval_id"] == approval_id
 
-    tasks = session.tasks.find_by_status("DONE")
+    filled = session.events.query("order/filled")
+    assert len(filled) == 1
+    assert filled[0]["payload"]["order_id"] == submitted[0]["payload"]["order_id"]
+
+    tasks = session.tasks.find_by_status("FILLED")
     assert len(tasks) == 1
     assert tasks[0]["order_id"].startswith("CRYPTO-ord-")
 
@@ -205,6 +217,7 @@ def test_approved_signal_submits_paper_order(monkeypatch):
     # tick 3：任务已完成，不重复提交
     run_once(session, agent)
     assert len(session.events.query("order/submitted")) == 1
+    assert len(session.events.query("order/filled")) == 1
 
 
 def test_rejected_signal_never_submits(monkeypatch):
@@ -244,4 +257,4 @@ def test_task_state_survives_runtime_restart(monkeypatch, tmp_path):
     _approve(approval_id)
     agent2, _ = _agent_and_session()
     run_once(session2, agent2)  # 重启后第一个 tick 完成提交
-    assert len(session2.tasks.find_by_status("DONE")) == 1
+    assert len(session2.tasks.find_by_status("FILLED")) == 1

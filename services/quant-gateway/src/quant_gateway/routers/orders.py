@@ -162,7 +162,10 @@ def request_order(market: Market, intent: dict,
             ),
         )
 
-    order_id = adapter.request_order(order_intent.model_dump(mode="json"))
+    try:
+        order_id = adapter.request_order(order_intent.model_dump(mode="json"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     storage.finalize_idempotency_key(idempotency_key, order_id)
     audit.record(
         "order.submitted", principal.name, market.value, order_id,
