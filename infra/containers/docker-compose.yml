@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  quant-gateway:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/quant-gateway.Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONPATH=/app/packages/domain-contracts/src:/app/services/quant-gateway/src
+    networks:
+      - dsh
+
+  strategy-evolution:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/strategy-evolution.Dockerfile
+    ports:
+      - "8002:8002"
+    networks:
+      - dsh
+
+  risk-policy:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/risk-policy.Dockerfile
+    ports:
+      - "8003:8003"
+    networks:
+      - dsh
+
+  projection-api:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/projection-api.Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - QUANT_GATEWAY_URL=http://quant-gateway:8001
+    depends_on:
+      - quant-gateway
+    networks:
+      - dsh
+
+  dsh-bot-web:
+    build:
+      context: ../..
+      dockerfile: infra/containers/apps/dsh-bot-web.Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PROJECTION_API_URL=http://projection-api:8004
+    depends_on:
+      - projection-api
+    networks:
+      - dsh
+
+networks:
+  dsh:
+    driver: bridge

@@ -1,0 +1,75 @@
+from enum import StrEnum
+
+
+class Market(StrEnum):
+    A_SHARE = "A_SHARE"
+    CRYPTO = "CRYPTO"
+
+
+class OrderSide(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderStatus(StrEnum):
+    """订单状态机，见 PRD 附录 A.1。"""
+
+    INTENT_CREATED = "INTENT_CREATED"
+    RISK_PASSED = "RISK_PASSED"
+    APPROVAL_PENDING = "APPROVAL_PENDING"
+    APPROVED = "APPROVED"
+    SUBMITTED = "SUBMITTED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
+    RECONCILING = "RECONCILING"
+    FAILED = "FAILED"
+
+
+class StrategyStage(StrEnum):
+    """策略进化状态机，见 PRD 10.4。"""
+
+    DRAFT = "DRAFT"
+    BACKTESTED = "BACKTESTED"
+    VALIDATED = "VALIDATED"
+    PAPER = "PAPER"
+    SHADOW = "SHADOW"
+    APPROVED = "APPROVED"
+    CANARY = "CANARY"
+    PRODUCTION = "PRODUCTION"
+    RETIRED = "RETIRED"
+    ROLLED_BACK = "ROLLED_BACK"
+
+
+class ApprovalStatus(StrEnum):
+    REQUESTED = "REQUESTED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+
+class IncidentStatus(StrEnum):
+    """事故状态机，见 PRD 附录 A.2。"""
+
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    MITIGATING = "MITIGATING"
+    MITIGATED = "MITIGATED"
+    RECOVERING = "RECOVERING"
+    RESOLVED = "RESOLVED"
+    REVIEWED = "REVIEWED"
+
+
+class TaskStatus(StrEnum):
+    """Bot 任务状态机，见 PRD 附录 A.3。"""
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    WAITING_FOR_TOOL = "WAITING_FOR_TOOL"
+    WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"

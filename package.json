@@ -1,0 +1,10 @@
+{
+  "name": "dsh-bot",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter dsh-bot-web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint"
+  },
+  "packageManager": "pnpm@11.11.0"
+}

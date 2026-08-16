@@ -1,0 +1,12 @@
+name: a-stock-bot
+description: A 股市场专业 Bot，负责交易日历、T+1、涨跌停、停复牌、公司行动和财报解读
+market: A_SHARE
+primary_tools:
+  - query_health
+  - query_positions
+  - query_signals
+  - preview_order
+  - explain_signal
+prohibited:
+  - direct_order
+  - access_credentials

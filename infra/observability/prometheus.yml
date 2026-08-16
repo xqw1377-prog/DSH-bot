@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "quant-gateway"
+    static_configs:
+      - targets: ["quant-gateway:8001"]
+
+  - job_name: "strategy-evolution"
+    static_configs:
+      - targets: ["strategy-evolution:8002"]
+
+  - job_name: "risk-policy"
+    static_configs:
+      - targets: ["risk-policy:8003"]
+
+  - job_name: "projection-api"
+    static_configs:
+      - targets: ["projection-api:8004"]

@@ -1,0 +1,12 @@
+name: strategy-lab
+description: 策略实验室 Bot，负责提出假设、创建候选策略、运行回测和验证实验
+market: GLOBAL
+primary_tools:
+  - create_hypothesis
+  - run_experiment
+  - compare_results
+  - submit_candidate
+prohibited:
+  - deploy_to_production
+  - access_live_keys
+  - increase_risk_budget
