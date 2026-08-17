@@ -25,6 +25,7 @@ from decimal import Decimal
 from dsh_contracts import Market, OrderIntent, OrderSide
 from dsh_gateway_client import GatewayClient, GatewayError, new_idempotency_key
 from dsh_runtime import BotSession
+from dsh_runtime.reconcile import evaluate_reconcile
 from dsh_trade_approval import ApprovalWorkflow
 
 
@@ -40,11 +41,16 @@ class CryptoAgent:
         approvals: ApprovalWorkflow,
         account_id: str,
         min_strength: float = 0.6,
+        mode: str = "paper",
     ):
+        if mode not in {"paper", "shadow", "live"}:
+            raise ValueError(f"unsupported crypto run mode: {mode}")
         self.gateway = gateway
         self.approvals = approvals
         self.account_id = account_id
         self.min_strength = min_strength
+        # Shadow 是运行模式：真实行情/账户只读决策，禁止 request_order
+        self.mode = mode
 
     # ---- 调度入口（由 DSH Runtime 驱动）----
 
@@ -480,11 +486,15 @@ class CryptoAgent:
         self._reconcile_account(session, task)
 
     def _reconcile_account(self, session: BotSession, task: dict) -> None:
-        """完整账户对账：成交数量与均价、手续费、现金、可用/冻结余额、
-        持仓、订单累计成交量、对账时间。全部一致才 MATCHED → DONE。"""
+        """预期值对账：成交量、持仓变化、现金变化、可用+冻结。
+
+        FILLED + MATCHED → DONE；任何字段不一致 → INCIDENT。
+        """
         order_id = task["order_id"]
-        expected = Decimal(str(task["payload"].get("quantity", "0.01")))
-        symbol = task["payload"]["symbol"]
+        payload = task["payload"]
+        baseline = payload.get("reconcile_baseline") or {}
+        symbol = payload["symbol"]
+        side = baseline.get("side") or payload.get("side") or "BUY"
         try:
             session.use("query_order_status")
             venue_order = self.gateway.get_order_status(Market.CRYPTO, order_id)
@@ -502,73 +512,78 @@ class CryptoAgent:
                 kind="error", tags=[task["task_id"]],
             )
             return
-        match = next((p for p in positions if p["symbol"] == symbol), None)
-        if match is None or Decimal(str(match["quantity"])) < expected:
-            # execution_status=FILLED 但 reconciliation_status=MISMATCH：
-            # 订单成交与账户状态不一致，开事故交人工处理
-            session.tasks.transition(task["task_id"], "INCIDENT",
-                                     reconciliation_status="MISMATCH")
+        match = next((p for p in positions if p.get("symbol") == symbol), None)
+        account = next(
+            (a for a in accounts if a.get("account_id") == self.account_id),
+            accounts[0] if accounts else None,
+        )
+        verdict = evaluate_reconcile(
+            side=side,
+            baseline_position=baseline.get("position_quantity", "0"),
+            baseline_cash=baseline.get("cash", "0"),
+            venue=venue_order,
+            position=match,
+            account=account,
+        )
+        reconciliation = {
+            "task_id": task["task_id"],
+            "order_id": order_id,
+            "expected_quantity": verdict.details.get("filled_quantity", "0"),
+            "execution_status": "FILLED",
+            "symbol": symbol,
+            "reconciled_at": datetime.now(UTC).isoformat(),
+            "venue_as_of": str(
+                venue_order.get("filled_at") or venue_order.get("as_of")
+            ),
+            **verdict.details,
+        }
+        if match is not None:
+            reconciliation.update(
+                {
+                    "positions_quantity": str(match.get("quantity")),
+                    "available_quantity": str(match.get("available_quantity")),
+                    "frozen_quantity": str(match.get("frozen_quantity", "0")),
+                }
+            )
+        if account is not None:
+            reconciliation.update(
+                {
+                    "cash": str(account.get("cash")),
+                    "equity": str(account.get("equity")),
+                    "reconciliation_version": account.get("reconciliation_version"),
+                }
+            )
+        if not verdict.matched:
+            reconciliation["reconciliation_status"] = "MISMATCH"
+            reconciliation["reason"] = "; ".join(verdict.reasons)
+            session.tasks.transition(
+                task["task_id"], "INCIDENT", reconciliation_status="MISMATCH"
+            )
             session.events.emit(
-                "account/mismatch", "CRYPTO", "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "execution_status": "FILLED",
-                 "reconciliation_status": "MISMATCH",
-                 "expected_quantity": str(expected),
-                 "positions_quantity": str(match["quantity"]) if match else None},
+                "account/mismatch", "CRYPTO", "bot", self.name, reconciliation
             )
             session.events.emit(
                 "incident/opened", "CRYPTO", "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "reason": "fill/position mismatch after FILLED"},
+                {
+                    "task_id": task["task_id"],
+                    "order_id": order_id,
+                    "reason": reconciliation["reason"],
+                },
             )
             session.memory.remember(
-                f"对账异常：订单 {order_id} 成交 {expected} 但持仓不足，"
-                f"已开事故等待人工处理",
+                f"对账异常：订单 {order_id} {reconciliation['reason']}",
                 kind="error", tags=[task["task_id"], "reconcile-mismatch"],
             )
             return
-        filled_qty = Decimal(str(venue_order.get("filled_quantity", expected)))
-        # 对账明细：成交数量与均价、手续费、现金、可用/冻结、持仓、
-        # 订单累计成交量与对账时间（数据版本用 venue 的 filled_at/as_of）
-        reconciliation = {
-            "task_id": task["task_id"], "order_id": order_id,
-            "execution_status": "FILLED",
-            "reconciliation_status": "MATCHED",
-            "symbol": symbol,
-            "quantity": str(expected),
-            "filled_quantity": str(filled_qty),
-            "avg_price": str(venue_order.get("avg_price")),
-            "fees": str(venue_order.get("fees", "0")),
-            "positions_quantity": str(match["quantity"]),
-            "available_quantity": str(match["available_quantity"]),
-            "frozen_quantity": str(match.get("frozen_quantity", "0")),
-            "cash": str(accounts[0]["cash"]) if accounts else None,
-            "equity": str(accounts[0]["equity"]) if accounts else None,
-            "reconciliation_version": (
-                accounts[0].get("reconciliation_version") if accounts else None
-            ),
-            "reconciled_at": datetime.now(UTC).isoformat(),
-            "venue_as_of": str(venue_order.get("filled_at")
-                               or venue_order.get("as_of")),
-        }
-        # 数量一致性：成交数量应覆盖委托数量，持仓应包含成交
-        if filled_qty < expected:
-            reconciliation["reconciliation_status"] = "MISMATCH"
-            session.tasks.transition(task["task_id"], "INCIDENT",
-                                     reconciliation_status="MISMATCH")
-            reconciliation["reason"] = (
-                f"filled {filled_qty} < ordered {expected}")
-            session.events.emit(
-                "account/mismatch", "CRYPTO", "bot", self.name, reconciliation)
-            return
+        reconciliation["reconciliation_status"] = "MATCHED"
         session.events.emit(
             "account/reconciled", "CRYPTO", "bot", self.name, reconciliation,
         )
-        # execution_status=FILLED + reconciliation_status=MATCHED → 任务终态 DONE
-        session.tasks.transition(task["task_id"], "DONE",
-                                 reconciliation_status="MATCHED")
+        session.tasks.transition(
+            task["task_id"], "DONE", reconciliation_status="MATCHED"
+        )
         session.memory.remember(
-            f"订单 {order_id} 对账通过（{symbol} {expected}），任务完成",
+            f"订单 {order_id} 对账通过（{symbol} {verdict.details.get('filled_quantity')}）",
             kind="order-reconciled", tags=[task["task_id"], order_id],
         )
 
@@ -615,6 +630,14 @@ class CryptoAgent:
         if preview is None:
             return
 
+        if self.mode == "shadow":
+            session.tasks.transition(task_id, "SHADOW_RECORDED")
+            session.memory.remember(
+                f"Shadow 模式记录决策 {signal_id}，不下单",
+                kind="shadow-decision", tags=[f"signal:{signal_id}", task_id],
+            )
+            return
+
         approval_id = self._request_approval(session, task_id, signal)
         if approval_id is None:
             return
@@ -654,6 +677,29 @@ class CryptoAgent:
             return None
 
         risk = preview.get("risk", {})
+        baseline_position = "0"
+        baseline_cash = "0"
+        try:
+            session.use("query_positions")
+            positions = self.gateway.get_positions(
+                Market.CRYPTO, account_id=self.account_id
+            )
+            session.use("query_accounts")
+            accounts = self.gateway.get_account_summary(Market.CRYPTO)
+            pos = next(
+                (p for p in positions if p.get("symbol") == signal["symbol"]),
+                None,
+            )
+            acct = next(
+                (a for a in accounts if a.get("account_id") == self.account_id),
+                accounts[0] if accounts else None,
+            )
+            if pos is not None:
+                baseline_position = str(pos.get("quantity", "0"))
+            if acct is not None:
+                baseline_cash = str(acct.get("cash", "0"))
+        except GatewayError:
+            pass
         # 风险数据随任务持久化，提交阶段据此注册快照
         task = session.tasks.get(task_id)
         payload = dict(task["payload"])
@@ -664,6 +710,12 @@ class CryptoAgent:
             worst_case_loss=str(risk.get("worst_case_loss", "0")),
             quantity=str(intent.quantity),
             idempotency_key=new_idempotency_key("crypto-paper"),
+            reconcile_baseline={
+                "position_quantity": baseline_position,
+                "cash": baseline_cash,
+                "side": signal["side"],
+                "symbol": signal["symbol"],
+            },
             # 审批绑定的执行边界：人工批准的是这个边界内的执行；
             # 执行前重新计算，超出边界拦截，变得更安全则允许继续
             risk_boundary={

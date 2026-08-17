@@ -59,4 +59,25 @@ export class ProjectionClient {
     const query = market ? `?market=${market}` : "";
     return this.get(`/v1/candidates${query}`);
   }
+
+  getBotTasks(bot?: string, status?: string): Promise<BotTask[]> {
+    const params = new URLSearchParams();
+    if (bot) params.set("bot", bot);
+    if (status) params.set("status", status);
+    const query = params.toString();
+    return this.get(`/v1/bot-tasks${query ? `?${query}` : ""}`);
+  }
 }
+
+export type BotTask = {
+  task_id: string;
+  bot: string;
+  kind: string;
+  status: string;
+  subject_id: string;
+  approval_id?: string | null;
+  order_id?: string | null;
+  reconciliation_status: string;
+  payload: Record<string, unknown>;
+  updated_at: string;
+};

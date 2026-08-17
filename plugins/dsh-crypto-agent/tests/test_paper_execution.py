@@ -42,6 +42,9 @@ class ExecutionAdapter(MarketAdapter):
         self.order_status: dict[str, str] = {}
         self.next_submit_status = "FILLED"
         self.risk_scale = Decimal("1")
+        self._qty = Decimal("0")
+        self._cash = Decimal("50000")
+        self._price = Decimal("100")
 
     # -- 可控点 --
     def set_order_status(self, order_id: str, status: str):
@@ -58,14 +61,16 @@ class ExecutionAdapter(MarketAdapter):
         from dsh_contracts import Position
         return [Position(
             market=self.market, account_id="crypto-paper-1",
-            symbol="BTCUSDT", quantity="0.01", available_quantity="0.01",
-            avg_cost="100", currency="USDT", as_of=datetime.now(UTC),
+            symbol="BTCUSDT", quantity=self._qty, available_quantity=self._qty,
+            frozen_quantity=Decimal("0"),
+            avg_cost=self._price, currency="USDT", as_of=datetime.now(UTC),
         )]
 
     def get_account_summary(self):
         return [AccountSummary(
             market=self.market, account_id="crypto-paper-1",
-            cash="50000", equity="82000", currency="USDT",
+            cash=self._cash, equity=self._cash + self._qty * self._price,
+            currency="USDT",
             reconciliation_version="v1", as_of=datetime.now(UTC),
         )]
 
@@ -107,12 +112,28 @@ class ExecutionAdapter(MarketAdapter):
         order_id = f"{self.market.value}-ord-{len(self.submitted)}"
         self._last_order_id = order_id
         self.order_status[order_id] = self.next_submit_status
+        qty = Decimal(str(payload.get("quantity", "0.01")))
+        if self.next_submit_status == "FILLED":
+            if payload.get("side") == "SELL":
+                self._qty -= qty
+                self._cash += qty * self._price
+            else:
+                self._qty += qty
+                self._cash -= qty * self._price
         return order_id
 
     def get_order_status(self, order_id):
         status = self.order_status.get(order_id, "UNKNOWN")
-        return {"order_id": order_id, "status": status,
-                "filled_quantity": "0.005" if status == "PARTIALLY_FILLED" else "0.01"}
+        filled = "0.005" if status == "PARTIALLY_FILLED" else "0.01"
+        return {
+            "order_id": order_id,
+            "status": status,
+            "filled_quantity": filled,
+            "avg_price": str(self._price),
+            "fees": "0",
+            "taxes": "0",
+            "fills": [{"quantity": filled, "price": str(self._price), "fee": "0"}],
+        }
 
     def cancel_order(self, order_id):
         return {"order_id": order_id, "status": "CANCELLED"}
@@ -498,3 +519,31 @@ def test_unknown_order_quarantine_times_out_to_incident():
     assert any("quarantine" in (i["payload"].get("reason") or "")
                for i in incidents)
     assert len(ADAPTER.submitted) == 1  # 全程没有重新提交
+
+
+def test_stale_position_without_cash_move_opens_incident():
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    real_request = ADAPTER.request_order
+
+    def fill_without_books(intent):
+        order_id = real_request(intent)
+        ADAPTER._qty = Decimal("0")
+        ADAPTER._cash = Decimal("50000")
+        return order_id
+
+    ADAPTER.request_order = fill_without_books
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("INCIDENT")) == 1
+    mismatch = session.events.query("account/mismatch")
+    assert mismatch
+    assert mismatch[0]["payload"]["reconciliation_status"] == "MISMATCH"
+
+
+def test_shadow_mode_never_submits():
+    agent, session = _agent_and_session()
+    agent.mode = "shadow"
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert client.get("/v1/approvals").json() == []
+    assert len(session.tasks.find_by_status("SHADOW_RECORDED")) == 1

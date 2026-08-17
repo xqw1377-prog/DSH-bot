@@ -111,6 +111,12 @@ def main() -> int:
         "--once", action="store_true", help="只跑一个 tick 后退出（冒烟用）"
     )
     parser.add_argument(
+        "--mode",
+        default=os.environ.get("DSH_CRYPTO_MODE", "paper"),
+        choices=("paper", "shadow", "live"),
+        help="paper=模拟成交；shadow=只读决策不下单；live=经 Gateway 实盘",
+    )
+    parser.add_argument(
         "--skip-account-check",
         action="store_true",
         help="跳过启动账户校验（仅测试）",
@@ -142,11 +148,12 @@ def main() -> int:
         approvals=approvals,
         account_id=account_id,
         min_strength=args.min_strength,
+        mode=args.mode,
     )
 
     print(
         f"[dsh] {profile.name} 启动：account={account_id} market={market.value} "
-        f"every={args.every}s"
+        f"mode={args.mode} every={args.every}s"
     )
     if args.once:
         from dsh_runtime import run_once

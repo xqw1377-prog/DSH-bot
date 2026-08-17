@@ -151,6 +151,17 @@ print(ids[0])
 STATUS=$(curl -sf "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/orders/$ORDER_ID")
 printf '%s' "$STATUS" | python -c "import json,sys; s=json.load(sys.stdin); assert s['status']=='FILLED', s; print('filled', s['order_id'])"
 
+python - <<PY
+import os, sqlite3
+db = os.environ["DSH_RUNTIME_DB"]
+conn = sqlite3.connect(db)
+rows = conn.execute("SELECT status, reconciliation_status FROM bot_tasks WHERE bot='crypto-bot'").fetchall()
+assert rows, "no bot tasks"
+assert all(r[0] == "DONE" for r in rows), rows
+assert all((r[1] or "") in ("MATCHED",) for r in rows), rows
+print("tasks done and matched", len(rows))
+PY
+
 echo "[smoke] auditor unavailable → cannot promote"
 CAND=$(curl -sf -X POST "$STRATEGY_EVOLUTION_URL/v1/candidates" \
   -H 'content-type: application/json' \

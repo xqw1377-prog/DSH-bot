@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/account/reconciled.json",
+  "title": "AccountReconciled",
+  "type": "object",
+  "required": ["order_id", "task_id", "reconciliation_status"],
+  "properties": {
+    "order_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "reconciliation_status": { "type": "string" },
+    "symbol": { "type": "string" },
+    "filled_quantity": { "type": "string" },
+    "expected_quantity": { "type": "string" },
+    "avg_price": { "type": "string" },
+    "fees": { "type": "string" },
+    "cash": { "type": ["string", "null"] },
+    "equity": { "type": ["string", "null"] },
+    "positions_quantity": { "type": ["string", "null"] },
+    "available_quantity": { "type": ["string", "null"] },
+    "frozen_quantity": { "type": ["string", "null"] },
+    "reconciliation_version": { "type": ["string", "null"] },
+    "reconciled_at": { "type": "string" }
+  }
+}

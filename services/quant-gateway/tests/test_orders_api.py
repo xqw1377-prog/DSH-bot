@@ -18,7 +18,6 @@ from quant_gateway.routers.orders import register_risk_snapshot
 
 @pytest.fixture()
 def client():
-    # FakeAdapter 已由 conftest 的 reset_gateway_state 自动注册
     return TestClient(app)
 
 

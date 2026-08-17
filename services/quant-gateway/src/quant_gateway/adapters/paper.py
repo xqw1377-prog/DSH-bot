@@ -163,16 +163,38 @@ class PaperAdapter(MarketAdapter):
         order_id = f"{self.market.value}-paper-{next(self._ids)}"
         avg_price = self._price
         filled_at = _now().isoformat()
+        quantity = Decimal(str(payload.get("quantity", "0")))
+        fees = Decimal("0")
+        position_before = self._qty
+        cash_before = self._cash
+        if payload.get("side") == "BUY":
+            self._qty += quantity
+            self._cash -= quantity * avg_price + fees
+        else:
+            self._qty -= quantity
+            self._cash += quantity * avg_price - fees
         record = {
             "order_id": order_id,
             "status": "FILLED",
             "market": self.market.value,
             "symbol": payload.get("symbol"),
             "side": payload.get("side"),
-            "filled_quantity": str(payload.get("quantity")),
+            "filled_quantity": str(quantity),
             "avg_price": str(avg_price),
             "filled_at": filled_at,
-            "fees": "0",
+            "fees": str(fees),
+            "taxes": "0",
+            "fills": [
+                {
+                    "quantity": str(quantity),
+                    "price": str(avg_price),
+                    "fee": str(fees),
+                }
+            ],
+            "position_before": str(position_before),
+            "cash_before": str(cash_before),
+            "position_after": str(self._qty),
+            "cash_after": str(self._cash),
             "source": "paper",
             "account_id": self._account_id,
             "intent": payload,
@@ -180,18 +202,11 @@ class PaperAdapter(MarketAdapter):
         self.submitted.append(payload)
         self._orders[order_id] = record
         storage.save_paper_order(order_id, self.market.value, record)
-        quantity = Decimal(str(payload.get("quantity", "0")))
-        if payload.get("side") == "BUY":
-            self._qty += quantity
-            self._cash -= quantity * avg_price
-        else:
-            self._qty -= quantity
-            self._cash += quantity * avg_price
         return order_id
 
     def find_order_by_idempotency_key(self, key: str) -> dict | None:
         # Paper 同步落库：按幂等键能查到即已接单；查不到即确定从未接受
-        found = find_paper_order_by_idempotency_key(key)
+        found = storage.find_paper_order_by_idempotency_key(key)
         if found is not None:
             return dict(found)
         return None

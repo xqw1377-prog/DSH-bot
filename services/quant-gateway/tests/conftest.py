@@ -82,14 +82,18 @@ class FakeAdapter(MarketAdapter):
         self.stopped = True
 
 
+def install_fake_adapters() -> None:
+    _adapters.clear()
+    register_adapter(Market.A_SHARE, FakeAdapter(Market.A_SHARE))
+    register_adapter(Market.CRYPTO, FakeAdapter(Market.CRYPTO))
+
+
 @pytest.fixture(autouse=True)
 def reset_gateway_state():
     """每个测试前重置适配器注册表与内存账本。"""
     from quant_gateway import approval_store
 
-    _adapters.clear()
     approval_store.reset()
-    register_adapter(Market.A_SHARE, FakeAdapter(Market.A_SHARE))
-    register_adapter(Market.CRYPTO, FakeAdapter(Market.CRYPTO))
+    install_fake_adapters()
     yield
     _adapters.clear()

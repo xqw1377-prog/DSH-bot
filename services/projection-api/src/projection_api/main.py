@@ -80,3 +80,55 @@ async def get_experiments(market: str | None = None):
 async def get_candidates(market: str | None = None):
     params = {"market": market} if market else None
     return await _proxy_evolution("/v1/candidates", params=params)
+
+
+@app.get("/v1/markets/{market}/orders/{order_id}")
+async def get_order(market: str, order_id: str):
+    return await _proxy_gateway(f"/v1/markets/{market}/orders/{order_id}")
+
+
+@app.get("/v1/bot-tasks")
+def get_bot_tasks(bot: str | None = None, status: str | None = None):
+    """只读投影 Runtime 任务，供异常路径与对账状态展示。"""
+    import json
+    import sqlite3
+
+    db = os.environ.get("DSH_RUNTIME_DB", "")
+    if not db or db.startswith(":memory"):
+        return []
+    if not os.path.isfile(db):
+        return []
+    conn = sqlite3.connect(db)
+    sql = (
+        "SELECT task_id, bot, kind, status, subject_id, approval_id, order_id,"
+        " COALESCE(reconciliation_status, 'PENDING'), payload, updated_at"
+        " FROM bot_tasks"
+    )
+    params: list = []
+    clauses = []
+    if bot:
+        clauses.append("bot = ?")
+        params.append(bot)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY updated_at DESC LIMIT 100"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [
+        {
+            "task_id": r[0],
+            "bot": r[1],
+            "kind": r[2],
+            "status": r[3],
+            "subject_id": r[4],
+            "approval_id": r[5],
+            "order_id": r[6],
+            "reconciliation_status": r[7],
+            "payload": json.loads(r[8]) if r[8] else {},
+            "updated_at": r[9],
+        }
+        for r in rows
+    ]
