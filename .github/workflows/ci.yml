@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          # 动态发现所有含 pyproject.toml 的包，避免引用不存在的插件
+          PKGS=$(find packages services plugins -name pyproject.toml \
+            -exec dirname {} \; | sed 's/^/-e /' | tr '\n' ' ')
+          pip install $PKGS pytest
+      - name: Schema compatibility check
+        run: python scripts/check_schemas.py
+      - name: Tests
+        run: pytest services/ plugins/ packages/ -q --tb=short -ra
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4  # 版本由 package.json 的 packageManager 决定
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: |
+          pnpm --filter @dsh-bot/client-sdk build  # 类型声明在 dist，先构建再 lint
+          pnpm -r lint
+      - name: Build
+        run: |
+          pnpm --filter @dsh-bot/client-sdk build
+          pnpm --filter dsh-bot-web build

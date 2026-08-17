@@ -4,13 +4,15 @@
 不能读取生产数据库或券商/交易所密钥。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
 from dsh_contracts import Market, OrderIntent
+from quant_gateway import storage
 from quant_gateway.adapters import get_adapter
+from quant_gateway.auth import require_read
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_read)])
 
 
 @router.get("/markets/{market}/health")
@@ -50,3 +52,14 @@ def preview_order(market: Market, intent: dict):
 @router.get("/markets/{market}/orders/{order_id}")
 def get_order_status(market: Market, order_id: str):
     return get_adapter(market).get_order_status(order_id)
+
+
+@router.get("/idempotency-keys/{key}")
+def get_idempotency_key(key: str):
+    """按幂等键查询已产生的订单。崩溃恢复 / 409 冲突时用于认领既有订单，
+    绝不用于重新下单。"""
+    entry = storage.get_idempotency_entry(key)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="idempotency key not found")
+    order_id, request_hash = entry
+    return {"key": key, "order_id": order_id, "request_hash": request_hash}

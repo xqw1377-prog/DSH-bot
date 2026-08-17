@@ -2,6 +2,10 @@
 
 基于 DeepSeek Harness 的持续进化量化 Agent 平台。
 
+> **当前版本定位（paper-closeout-v0.1）**：`execution_mode = paper`
+> —— 单机、多 worker、Paper 执行闭环基线。可用于 Paper/Testnet 全流程
+> 验证，**不是实盘生产就绪版本**（实盘前 P0 见 docs/harness-integration.md）。
+
 DSH Bot 是量化系统上方的智能控制面：让用户以自然语言管理研究、信号、策略、风险、审批、异常和策略进化，同时保留确定性量化系统对资金和订单的最终控制。
 
 ## 架构原则
@@ -50,12 +54,65 @@ docs/                   # 产品与架构文档
 
 ### 后端（Python 3.12+）
 
+> 注意：`domain-contracts` 要求 Python >= 3.12（使用 `StrEnum`）。macOS 系统默认 `python3` 可能是 3.9/3.10，请用 `python3.12` 创建虚拟环境。
+
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e packages/domain-contracts -e services/quant-gateway -e services/strategy-evolution -e services/risk-policy -e services/projection-api
-uvicorn quant_gateway.main:app --port 8001
+python3.12 -m venv .venv
+.venv\Scripts\Activate.ps1      # Windows
+# source .venv/bin/activate     # macOS / Linux
+pip install -e packages/domain-contracts -e packages/dsh-runtime \
+  -e services/quant-gateway -e services/strategy-evolution \
+  -e services/risk-policy -e services/projection-api \
+  -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
+  -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
+  -e plugins/dsh-risk-auditor -e plugins/dsh-incident-center \
+  -e plugins/dsh-a-stock-agent -e plugins/dsh-strategy-lab
 ```
+
+### 本地 Paper 一键环境
+
+```bash
+cp .env.local.example .env.local   # 统一 DSH_ENV / 账户 / DB / 服务地址
+./scripts/start-local.sh           # 启动 8001-8005（含独立 Risk Auditor）
+./scripts/smoke_p0.sh              # 进程级冒烟：审批→下单→成交→审计失败关闭
+```
+
+生产启动请用 `./scripts/start-backends.sh`（要求 API Key，禁止 `DSH_ENV=development` 与 Paper）。
+
+### 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `QUANT_GATEWAY_DB` | SQLite（审批、幂等键、审计、Paper 订单）；未设置时用内存 |
+| `QUANT_GATEWAY_API_KEYS` | API key：`key/name:read,write;...` |
+| `DSH_ENV` | `development` 允许无鉴权；生产缺 API Key 拒绝启动 |
+| `RISK_POLICY_URL` | risk-policy 地址，默认 `http://127.0.0.1:8003` |
+| `STRATEGY_EVOLUTION_AUDITOR_URL` | 独立 Risk Auditor HTTP；APPROVED+ 晋级必填，不可达失败关闭 |
+| `PAPER_CRYPTO_ACCOUNT_ID` / `DSH_CRYPTO_ACCOUNT_ID` | Paper 与 Crypto Bot 统一账户 ID |
+
+### 测试与校验
+
+```bash
+pytest services/ plugins/ packages/dsh-runtime -q
+python scripts/check_schemas.py
+bash scripts/smoke_p0.sh
+```
+
+CI 自动跑单元测试、进程级冒烟和前端构建。
+
+### 运行 Crypto Bot（Paper 闭环）
+
+```bash
+# 终端 1
+./scripts/start-local.sh
+
+# 终端 2：启动时校验账户存在且市场匹配
+python scripts/run_crypto_bot.py --every 60
+```
+
+闭环：健康检查 → 信号 → 预览 → 人工审批（记忆去重）→ 批准 → 风险快照 →
+二次硬风控 → Paper 下单 → 成交回写（`order/filled`）。拒绝/超时/网关不可达一律不下单。
+也可用 `python scripts/run_dsh.py` 同时跑 Market Chief + Crypto。
 
 ### 前端（Node 20+ / pnpm）
 

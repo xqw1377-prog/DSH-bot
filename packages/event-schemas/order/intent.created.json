@@ -17,17 +17,51 @@
     "risk_snapshot_id"
   ],
   "properties": {
-    "idempotency_key": { "type": "string", "format": "uuid" },
-    "market": { "type": "string", "enum": ["A_SHARE", "CRYPTO"] },
-    "account_id": { "type": "string" },
-    "strategy_id": { "type": "string" },
-    "strategy_version": { "type": "string" },
-    "symbol": { "type": "string" },
-    "side": { "type": "string", "enum": ["BUY", "SELL"] },
-    "quantity": { "type": "string", "description": "decimal string，明确精度" },
-    "valid_until": { "type": "string", "format": "date-time" },
-    "signal_snapshot_id": { "type": "string" },
-    "risk_snapshot_id": { "type": "string" },
-    "approval_id": { "type": "string" }
+    "idempotency_key": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "account_id": {
+      "type": "string"
+    },
+    "strategy_id": {
+      "type": "string"
+    },
+    "strategy_version": {
+      "type": "string"
+    },
+    "symbol": {
+      "type": "string"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "BUY",
+        "SELL"
+      ]
+    },
+    "quantity": {
+      "type": "string",
+      "description": "decimal string，明确精度"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "signal_snapshot_id": {
+      "type": "string"
+    },
+    "risk_snapshot_id": {
+      "type": "string"
+    },
+    "approval_id": {
+      "type": "string"
+    }
   }
 }

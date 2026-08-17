@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/approval/requested.json",
+  "title": "ApprovalRequested",
+  "type": "object",
+  "required": [
+    "approval_id",
+    "market",
+    "requested_by_bot",
+    "subject_type",
+    "subject_id",
+    "requested_at"
+  ],
+  "properties": {
+    "approval_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "requested_by_bot": {
+      "type": "string"
+    },
+    "subject_type": {
+      "type": "string",
+      "enum": [
+        "order",
+        "strategy_promotion",
+        "risk_budget",
+        "control_action"
+      ]
+    },
+    "subject_id": {
+      "type": "string"
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "task_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

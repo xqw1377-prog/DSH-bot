@@ -6,8 +6,12 @@ primary_tools:
   - query_positions
   - query_signals
   - preview_order
-  - explain_signal
+  - query_approvals
+  - query_order_status
+  - query_accounts
+  - submit_order
 prohibited:
   - direct_order
   - withdrawal
   - access_credentials
+  - decide_approval

@@ -21,9 +21,12 @@ from quant_gateway.routers import orders
 class FakeAdapter(MarketAdapter):
     """代表现有量化系统的内存实现，仅用于测试。"""
 
+    order_lookup_consistency = "STRONG"
+
     def __init__(self, market: Market) -> None:
         self.market = market
         self._ids = count(1)
+        self._orders_by_key: dict[str, dict] = {}
         self.submitted: list[dict] = []
         self.cancelled: list[str] = []
         self.paused: list[str] = []
@@ -52,9 +55,16 @@ class FakeAdapter(MarketAdapter):
         return {"intent": intent, "estimated_cost": "0", "estimated_slippage": "0"}
 
     def request_order(self, intent) -> str:
+        payload = intent if isinstance(intent, dict) else intent
         order_id = f"{self.market}-ord-{next(self._ids)}"
-        self.submitted.append(intent)
+        self.submitted.append(payload)
+        key = payload.get("idempotency_key") if isinstance(payload, dict) else payload.idempotency_key
+        self._orders_by_key[key] = {"order_id": order_id}
         return order_id
+
+    def find_order_by_idempotency_key(self, key: str) -> dict | None:
+        # 内存账本同步写入：查不到即确定从未接受
+        return self._orders_by_key.get(key)
 
     def get_order_status(self, order_id: str) -> dict:
         return {"order_id": order_id, "status": "ACKNOWLEDGED"}
@@ -80,9 +90,7 @@ def reset_gateway_state():
     from quant_gateway import approval_store
 
     _adapters.clear()
-    orders._seen_idempotency_keys.clear()
-    orders._risk_snapshots.clear()
-    approval_store._approvals.clear()
+    approval_store.reset()
     register_adapter(Market.A_SHARE, FakeAdapter(Market.A_SHARE))
     register_adapter(Market.CRYPTO, FakeAdapter(Market.CRYPTO))
     yield

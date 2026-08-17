@@ -9,30 +9,42 @@ request_order / cancel_order 可改变资金状态，必须满足：
 - 返回权威订单 ID 或明确错误
 """
 
+import hashlib
+import json
 import os
 
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
 from dsh_contracts import Market, OrderIntent, RiskSnapshot
+from quant_gateway import audit, storage
 from quant_gateway.adapters import get_adapter
 from quant_gateway.approval_store import check_order_risk, is_approved
+from quant_gateway.auth import Principal, require_write
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_write)])
+
+# RESERVED 无 order_id 的在途宽限：窗口内视为并发在途，不做恢复判定
+SUBMISSION_UNKNOWN_GRACE_SECONDS = 30.0
+
+
+def _idempotency_age_seconds(updated_at: str | None) -> float | None:
+    from datetime import UTC, datetime
+    if not updated_at:
+        return None
+    try:
+        return (datetime.now(UTC) - datetime.fromisoformat(updated_at)).total_seconds()
+    except ValueError:
+        return None
 
 RISK_POLICY_URL = os.environ.get("RISK_POLICY_URL", "http://127.0.0.1:8003")
 
-# 内存中的幂等键日志，生产应替换为持久化 + TTL。
-_seen_idempotency_keys: dict[str, str] = {}  # key -> order_id
-
-# 内存中的风险快照；生产应由 risk-policy 生成并持久化。
-_risk_snapshots: dict[str, RiskSnapshot] = {}
-
-
 def register_risk_snapshot(snapshot: RiskSnapshot) -> None:
-    """测试/联调辅助：注册风险快照。生产由 risk-policy 写入。"""
-    _risk_snapshots[snapshot.risk_snapshot_id] = snapshot
+    """注册风险快照（持久化，多 worker 可见）。生产由 risk-policy 写入。"""
+    storage.save_risk_snapshot(
+        snapshot.risk_snapshot_id, snapshot.market.value,
+        snapshot.model_dump(mode="json"),
+    )
 
 
 def _account_equity(adapter, account_id: str):
@@ -45,8 +57,28 @@ def _account_equity(adapter, account_id: str):
         return 0
 
 
+@router.post("/markets/{market}/risk-snapshots", status_code=201)
+def register_risk_snapshot_api(market: Market, snapshot: dict,
+                               principal: Principal = Depends(require_write)):
+    """注册风险快照。快照来源必须可信（如订单预览的计算结果），
+    提交订单时按 risk_snapshot_id 查验，查不到即失败关闭。"""
+    from pydantic import ValidationError as VE
+    try:
+        parsed = RiskSnapshot.model_validate(snapshot)
+    except VE as exc:
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
+    if parsed.market != market:
+        raise HTTPException(
+            status_code=422,
+            detail=f"snapshot market {parsed.market} does not match path market {market}",
+        )
+    register_risk_snapshot(parsed)
+    return {"risk_snapshot_id": parsed.risk_snapshot_id}
+
+
 @router.post("/markets/{market}/orders")
-def request_order(market: Market, intent: dict):
+def request_order(market: Market, intent: dict,
+                  principal: Principal = Depends(require_write)):
     # 1. 契约校验：拒绝模糊或不完整的订单意图
     try:
         order_intent = OrderIntent.model_validate(intent)
@@ -60,19 +92,82 @@ def request_order(market: Market, intent: dict):
 
     adapter = get_adapter(market)
 
-    # 2. 幂等
+    # 2. 幂等：请求体哈希 + 持久化键日志。
+    # 相同键相同请求体 → 409 并返回已有订单；相同键不同请求体 → 409 冲突。
     idempotency_key = order_intent.idempotency_key
-    if idempotency_key in _seen_idempotency_keys:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "duplicate idempotency key; no new order created; "
-                f"previous order_id={_seen_idempotency_keys[idempotency_key]}"
-            ),
-        )
+    request_hash = hashlib.sha256(
+        json.dumps(order_intent.model_dump(mode="json"), sort_keys=True).encode()
+    ).hexdigest()
+    entry = storage.get_idempotency_entry(idempotency_key)
+    if entry is not None:
+        previous_order_id, previous_hash = entry
+        if previous_hash != request_hash:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "idempotency key reused with different request body; "
+                    "rejected"
+                ),
+            )
+        if previous_order_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "duplicate idempotency key; no new order created; "
+                    f"previous order_id={previous_order_id}"
+                ),
+            )
+        # SUBMISSION_UNKNOWN：venue 可能已接单但网关在写库前崩溃。
+        # 仅当键已老化（超过在途窗口）才做恢复：新鲜的 RESERVED 属于并发在途，
+        # venue 查不到不代表未接单。恢复顺序：找到即认领；明确不存在才释放重试。
+        record = storage.get_idempotency_record(idempotency_key) or {}
+        age_seconds = _idempotency_age_seconds(record.get("updated_at"))
+        if age_seconds is None or age_seconds < SUBMISSION_UNKNOWN_GRACE_SECONDS:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "idempotency key in flight (RESERVED without order_id); "
+                    "retry after grace period"
+                ),
+            )
+        recovered = adapter.find_order_by_idempotency_key(idempotency_key)
+        if recovered is not None and recovered.get("order_id"):
+            recovered_id = recovered["order_id"]
+            storage.finalize_idempotency_key(idempotency_key, recovered_id)
+            audit.record(
+                "order.submission_recovered", principal.name, market.value,
+                recovered_id,
+                detail=f"intent={idempotency_key} recovered from venue",
+            )
+            return {"order_id": recovered_id, "status": "SUBMITTED",
+                    "recovered": True}
+        if recovered is None:
+            # 「查无」只有在适配器声明强一致查询时才可断定从未接受；
+            # EVENTUAL/UNSUPPORTED 下查无 ≠ 未接单，保持占用转人工
+            if getattr(adapter, "order_lookup_consistency", "UNSUPPORTED") == "STRONG":
+                storage.mark_idempotency_failed(idempotency_key)
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "submission unknown: venue lookup not strongly "
+                        "consistent; manual intervention required; "
+                        "resubmission blocked"
+                    ),
+                )
+        else:
+            # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "submission unknown: idempotency key occupied without "
+                    "order_id; venue lookup inconclusive; resubmission blocked"
+                ),
+            )
 
     # 3. 风险快照（失败关闭：查不到快照即拒绝）
-    snapshot = _risk_snapshots.get(order_intent.risk_snapshot_id)
+    raw = storage.get_risk_snapshot(order_intent.risk_snapshot_id)
+    snapshot = RiskSnapshot.model_validate(raw) if raw is not None else None
     if snapshot is None:
         raise HTTPException(
             status_code=422,
@@ -118,11 +213,33 @@ def request_order(market: Market, intent: dict):
             detail=f"approval {order_intent.approval_id} is not APPROVED; order rejected",
         )
 
-    order_id = adapter.request_order(order_intent.model_dump(mode="json"))
-    _seen_idempotency_keys[idempotency_key] = order_id
+    # 6. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
+    if not storage.record_idempotency_key(idempotency_key, request_hash):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "duplicate idempotency key (concurrent request won); "
+                "no new order created"
+            ),
+        )
+
+    try:
+        order_id = adapter.request_order(order_intent.model_dump(mode="json"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    storage.finalize_idempotency_key(idempotency_key, order_id)
+    audit.record(
+        "order.submitted", principal.name, market.value, order_id,
+        detail=f"intent={order_intent.idempotency_key} "
+               f"approval={order_intent.approval_id} "
+               f"{order_intent.side} {order_intent.symbol} {order_intent.quantity}",
+    )
     return {"order_id": order_id, "status": "SUBMITTED"}
 
 
 @router.post("/markets/{market}/orders/{order_id}/cancel")
-def cancel_order(market: Market, order_id: str):
-    return get_adapter(market).cancel_order(order_id)
+def cancel_order(market: Market, order_id: str,
+                 principal: Principal = Depends(require_write)):
+    result = get_adapter(market).cancel_order(order_id)
+    audit.record("order.cancelled", principal.name, market.value, order_id)
+    return result

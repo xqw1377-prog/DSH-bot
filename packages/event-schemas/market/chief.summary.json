@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/market/chief.summary.json",
+  "title": "MarketChiefSummary",
+  "type": "object",
+  "required": [
+    "markets",
+    "pending_approvals",
+    "degraded"
+  ],
+  "properties": {
+    "markets": {
+      "type": "object"
+    },
+    "pending_approvals": {
+      "type": "integer"
+    },
+    "degraded": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

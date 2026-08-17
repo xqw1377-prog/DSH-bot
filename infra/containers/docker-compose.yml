@@ -9,6 +9,12 @@ services:
       - "8001:8001"
     environment:
       - PYTHONPATH=/app/packages/domain-contracts/src:/app/services/quant-gateway/src
+      - QUANT_GATEWAY_DB=/data/gateway.db
+      - DSH_ENV=production
+      # 生产必须配置 API key，否则网关拒绝启动：
+      # QUANT_GATEWAY_API_KEYS="key/name:read,write;..."
+    volumes:
+      - gateway-data:/data
     networks:
       - dsh
 
@@ -59,3 +65,6 @@ services:
 networks:
   dsh:
     driver: bridge
+
+volumes:
+  gateway-data:

@@ -62,6 +62,15 @@ class GatewayClient:
     def get_order_status(self, market: Market, order_id: str):
         return self._get(f"/v1/markets/{market.value}/orders/{order_id}")
 
+    def register_risk_snapshot(self, market: Market, snapshot: dict) -> dict:
+        """把预览得到的风险快照注册到网关，供正式提交时查验。"""
+        resp = self._client.post(
+            f"/v1/markets/{market.value}/risk-snapshots", json=snapshot
+        )
+        if resp.is_error:
+            raise GatewayError(resp.status_code, resp.text)
+        return resp.json()
+
     # ---- 审批 ----
 
     def request_approval(
@@ -90,6 +99,10 @@ class GatewayClient:
         }.items() if v}
         return self._get("/v1/approvals", params or None)
 
+    def get_approval(self, approval_id: str) -> dict:
+        """查询单个审批状态。Bot 轮询审批结果用，不改变状态。"""
+        return self._get(f"/v1/approvals/{approval_id}")
+
     def decide_approval(self, approval_id: str, decision: str, decided_by: str):
         """仅供人工审批界面使用，Bot 禁止调用。"""
         resp = self._client.post(
@@ -115,6 +128,34 @@ class GatewayClient:
     def cancel_order(self, market: Market, order_id: str) -> dict:
         resp = self._client.post(
             f"/v1/markets/{market.value}/orders/{order_id}/cancel"
+        )
+        if resp.is_error:
+            raise GatewayError(resp.status_code, resp.text)
+        return resp.json()
+
+    # ---- 控制动作（需更强授权）----
+
+    def pause_strategy(self, market: Market, strategy_id: str) -> dict:
+        resp = self._client.post(
+            f"/v1/markets/{market.value}/strategies/{strategy_id}/pause"
+        )
+        if resp.is_error:
+            raise GatewayError(resp.status_code, resp.text)
+        return resp.json()
+
+    def resume_strategy(self, market: Market, strategy_id: str) -> dict:
+        resp = self._client.post(
+            f"/v1/markets/{market.value}/strategies/{strategy_id}/resume"
+        )
+        if resp.is_error:
+            raise GatewayError(resp.status_code, resp.text)
+        return resp.json()
+
+    def emergency_stop(self, market: Market, account_id: str | None = None) -> dict:
+        """Kill Switch：独立控制通道，不依赖 LLM。凭据由 Gateway 管理。"""
+        params = {"account_id": account_id} if account_id else None
+        resp = self._client.post(
+            f"/v1/markets/{market.value}/emergency-stop", params=params
         )
         if resp.is_error:
             raise GatewayError(resp.status_code, resp.text)

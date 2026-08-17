@@ -154,3 +154,165 @@ def test_intent_validation_rejects_fuzzy_body(client, risk_pass):
         json=make_intent(idempotency_key="bad-1", quantity=None),
     )
     assert resp.status_code == 422
+
+
+def test_same_key_different_body_conflicts(client, risk_pass):
+    register_risk_snapshot(make_snapshot())
+    approval_id = approved_approval()
+    first = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(idempotency_key="clash-key", approval_id=approval_id),
+    )
+    assert first.status_code == 200
+    # 同一幂等键但请求体不同（数量改变）→ 冲突拒绝
+    resp = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(
+            idempotency_key="clash-key", quantity="200", approval_id=approval_id
+        ),
+    )
+    assert resp.status_code == 409
+    assert "different request body" in resp.json()["detail"]
+
+
+def test_concurrent_duplicate_requests_submit_exactly_once(client, risk_pass):
+    """并发原子性：两个线程同时提交相同幂等键，只允许一笔订单。"""
+    import threading
+
+    from quant_gateway.adapters import get_adapter
+
+    register_risk_snapshot(make_snapshot())
+    body = make_intent(idempotency_key="race-key", approval_id=approved_approval())
+
+    barrier = threading.Barrier(4)
+
+    def slow_submit():
+        barrier.wait()  # 尽量同时进入
+        return client.post("/v1/markets/A_SHARE/orders", json=body)
+
+    threads_results: list = []
+    lock = threading.Lock()
+
+    def worker():
+        resp = slow_submit()
+        with lock:
+            if resp.status_code == 200:
+                # 成功响应必须全部指向同一订单（含崩溃恢复认领路径）
+                threads_results.append(resp.json()["order_id"])
+            else:
+                threads_results.append(str(resp.status_code))
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    successes = [r for r in threads_results if not r.isdigit()]
+    assert 1 <= len(successes) <= 2  # 正常并发 1 个；恢复竞态下最多 2 个
+    assert len(set(successes)) == 1  # 但必须共享同一 order_id
+    adapter = get_adapter(Market.A_SHARE)
+    assert len(adapter.submitted) == 1  # 量化系统只收到一笔
+
+
+def test_crash_after_venue_accept_recovers_same_order(risk_pass, monkeypatch):
+    """venue 已接单、网关 finalize 前崩溃：重试必须认领同一订单，不得重复下单。"""
+    from quant_gateway import storage as gw_storage
+
+    # 不把服务端异常抛进测试进程，拿到真实 500 响应
+    client = TestClient(app, raise_server_exceptions=False)
+
+    register_risk_snapshot(make_snapshot())
+    body = make_intent(idempotency_key="crash-key", approval_id=approved_approval())
+
+    # 模拟崩溃：finalize 抛异常（venue 已接受，幂等键停留在 RESERVED）
+    real_finalize = gw_storage.finalize_idempotency_key
+
+    def crashing_finalize(key, order_id):
+        raise RuntimeError("process crashed before finalize")
+
+    monkeypatch.setattr(orders_router.storage, "finalize_idempotency_key",
+                        crashing_finalize)
+    first = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert first.status_code == 500  # 崩溃
+    monkeypatch.setattr(orders_router.storage, "finalize_idempotency_key",
+                        real_finalize)
+
+    # 宽限窗口内重试：在途 409，禁止恢复判定
+    early = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert early.status_code == 409
+    assert "in flight" in early.json()["detail"]
+
+    # 老化幂等键（越过宽限窗口）
+    with gw_storage.locked_conn() as conn:
+        conn.execute(
+            "UPDATE idempotency_keys SET updated_at = ? WHERE key = ?",
+            ("2020-01-01T00:00:00Z", "crash-key"),
+        )
+        conn.commit()
+
+    recovered = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert recovered.status_code == 200
+    assert recovered.json()["recovered"] is True
+    assert recovered.json()["order_id"] == "A_SHARE-ord-1"
+
+    from quant_gateway.adapters import get_adapter
+    adapter = get_adapter(Market.A_SHARE)
+    assert len(adapter.submitted) == 1  # venue 只收到过一笔
+
+    # 再重试：普通幂等重放 409，指向已认领订单
+    again = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert again.status_code == 409
+    assert "A_SHARE-ord-1" in again.json()["detail"]
+
+    audit = client.get("/v1/audit").json()
+    assert any(e["action"] == "order.submission_recovered" for e in audit)
+
+
+def test_eventual_consistency_adapter_never_auto_releases(client, risk_pass):
+    """弱一致查询的适配器：查无不能断定未接单，禁止自动释放重试。"""
+    from quant_gateway.adapters import get_adapter
+
+    register_risk_snapshot(make_snapshot())
+    body = make_intent(idempotency_key="eventual-key",
+                       approval_id=approved_approval())
+    adapter = get_adapter(Market.A_SHARE)
+    adapter.order_lookup_consistency = "EVENTUAL"
+
+    # 手工制造 RESERVED-无订单 的崩溃窗口（不经过 adapter 提交）
+    from quant_gateway import storage as gw_storage
+    import hashlib as _h
+    fake_hash = _h.sha256(b"whatever").hexdigest()
+    assert gw_storage.record_idempotency_key("eventual-key", fake_hash)
+    with gw_storage.locked_conn() as conn:
+        conn.execute(
+            "UPDATE idempotency_keys SET updated_at = '2020-01-01T00:00:00Z'"
+            " WHERE key = 'eventual-key'"
+        )
+        conn.commit()
+
+    # 用与网关一致的请求体哈希重建崩溃窗口键
+    with gw_storage.locked_conn() as conn:
+        conn.execute("DELETE FROM idempotency_keys WHERE key = 'eventual-key'")
+        conn.commit()
+    # 与网关一致：按 OrderIntent 契约序列化后取哈希
+    import json as _json
+    from dsh_contracts import OrderIntent as _OI
+    canonical = _OI.model_validate(body).model_dump(mode="json")
+    real_hash = _h.sha256(_json.dumps(
+        canonical, sort_keys=True).encode()).hexdigest()
+    # 直接走 API 二次提交制造真实崩溃窗口更复杂；此处直接验证：
+    # EVENTUAL 适配器 + 查无 → 409 阻断（不释放键）
+    assert gw_storage.record_idempotency_key("eventual-key", real_hash)
+    with gw_storage.locked_conn() as conn:
+        conn.execute(
+            "UPDATE idempotency_keys SET updated_at = '2020-01-01T00:00:00Z'"
+            " WHERE key = 'eventual-key'"
+        )
+        conn.commit()
+    resp = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert resp.status_code == 409
+    assert "not strongly consistent" in resp.json()["detail"]
+    # 键未被释放：仍是占用状态（无 order_id 且状态非 FAILED）
+    record = gw_storage.get_idempotency_record("eventual-key")
+    assert record["status"] != "FAILED"

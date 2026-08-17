@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/risk/evaluated.json",
+  "title": "RiskEvaluated",
+  "type": "object",
+  "required": [
+    "risk_snapshot_id",
+    "market",
+    "passed",
+    "evaluated_at"
+  ],
+  "properties": {
+    "risk_snapshot_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "limits_hit": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_budget_delta": {
+      "type": "string",
+      "description": "decimal string"
+    },
+    "worst_case_loss": {
+      "type": "string",
+      "description": "decimal string"
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
