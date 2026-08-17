@@ -21,6 +21,7 @@ from quant_gateway import audit, storage
 from quant_gateway.adapters import get_adapter
 from quant_gateway.approval_store import check_order_risk, is_approved
 from quant_gateway.auth import Principal, require_write
+from quant_gateway.errors import structured_error
 
 router = APIRouter(dependencies=[Depends(require_write)])
 
@@ -83,11 +84,24 @@ def request_order(market: Market, intent: dict,
     try:
         order_intent = OrderIntent.model_validate(intent)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
+        raise structured_error(
+            422,
+            error_code="INTENT_INVALID",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=str(exc.errors(include_url=False)),
+        ) from exc
     if order_intent.market != market:
-        raise HTTPException(
-            status_code=422,
-            detail=f"intent market {order_intent.market} does not match path market {market}",
+        raise structured_error(
+            422,
+            error_code="MARKET_MISMATCH",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"intent market {order_intent.market} does not match path market {market}"
+            ),
         )
 
     adapter = get_adapter(market)
@@ -102,17 +116,24 @@ def request_order(market: Market, intent: dict,
     if entry is not None:
         previous_order_id, previous_hash = entry
         if previous_hash != request_hash:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "idempotency key reused with different request body; "
-                    "rejected"
+            raise structured_error(
+                409,
+                error_code="IDEMPOTENCY_CONFLICT",
+                phase="PRE_SUBMIT",
+                retryable=False,
+                submission_unknown=False,
+                message=(
+                    "idempotency key reused with different request body; rejected"
                 ),
             )
         if previous_order_id:
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            raise structured_error(
+                409,
+                error_code="DUPLICATE_ORDER",
+                phase="PRE_SUBMIT",
+                retryable=False,
+                submission_unknown=False,
+                message=(
                     "duplicate idempotency key; no new order created; "
                     f"previous order_id={previous_order_id}"
                 ),
@@ -123,9 +144,13 @@ def request_order(market: Market, intent: dict,
         record = storage.get_idempotency_record(idempotency_key) or {}
         age_seconds = _idempotency_age_seconds(record.get("updated_at"))
         if age_seconds is None or age_seconds < SUBMISSION_UNKNOWN_GRACE_SECONDS:
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            raise structured_error(
+                409,
+                error_code="IDEMPOTENCY_IN_FLIGHT",
+                phase="SUBMITTING",
+                retryable=True,
+                submission_unknown=True,
+                message=(
                     "idempotency key in flight (RESERVED without order_id); "
                     "retry after grace period"
                 ),
@@ -146,9 +171,13 @@ def request_order(market: Market, intent: dict,
             storage.mark_idempotency_failed(idempotency_key)
         else:
             # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            raise structured_error(
+                409,
+                error_code="SUBMISSION_UNKNOWN",
+                phase="SUBMITTING",
+                retryable=False,
+                submission_unknown=True,
+                message=(
                     "submission unknown: idempotency key occupied without "
                     "order_id; venue lookup inconclusive; resubmission blocked"
                 ),
@@ -158,14 +187,22 @@ def request_order(market: Market, intent: dict,
     raw = storage.get_risk_snapshot(order_intent.risk_snapshot_id)
     snapshot = RiskSnapshot.model_validate(raw) if raw is not None else None
     if snapshot is None:
-        raise HTTPException(
-            status_code=422,
-            detail="risk snapshot not found; fail-closed, order rejected",
+        raise structured_error(
+            422,
+            error_code="RISK_SNAPSHOT_MISSING",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message="risk snapshot not found; fail-closed, order rejected",
         )
     if snapshot.limits_hit:
-        raise HTTPException(
-            status_code=422,
-            detail=f"risk limits hit: {snapshot.limits_hit}; order rejected",
+        raise structured_error(
+            422,
+            error_code="RISK_LIMITS_HIT",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=f"risk limits hit: {snapshot.limits_hit}; order rejected",
         )
 
     # 4. 二次硬风控（失败关闭：risk-policy 不可达或拒绝即拒绝订单）
@@ -180,33 +217,75 @@ def request_order(market: Market, intent: dict,
             worst_case_loss=str(snapshot.worst_case_loss),
             equity=str(_account_equity(adapter, order_intent.account_id)),
         )
-    except Exception as exc:  # 任何失败都失败关闭，不做猜测放行
-        raise HTTPException(
-            status_code=503,
-            detail=f"risk-policy unreachable; fail-closed, order rejected: {exc}",
+    except Exception as exc:  # venue 尚未调用
+        raise structured_error(
+            503,
+            error_code="RISK_POLICY_UNAVAILABLE",
+            phase="PRE_SUBMIT",
+            retryable=True,
+            submission_unknown=False,
+            message=f"risk-policy unreachable; fail-closed, order rejected: {exc}",
         ) from exc
+    if check.get("kill_switch") or check.get("severity") == "CRITICAL":
+        try:
+            audit.record(
+                "kill_switch.requested", principal.name, market.value,
+                order_intent.account_id,
+                detail=f"risk-policy CRITICAL {check.get('limits_hit')}",
+            )
+            adapter.emergency_stop(account_id=order_intent.account_id)
+            audit.record(
+                "kill_switch.succeeded", principal.name, market.value,
+                order_intent.account_id,
+                detail="emergency_stop engaged after CRITICAL risk check",
+            )
+        except Exception as exc:
+            audit.record(
+                "kill_switch.failed", principal.name, market.value,
+                order_intent.account_id,
+                detail=str(exc),
+            )
     if not check.get("passed"):
-        raise HTTPException(
-            status_code=422,
-            detail=f"risk check failed: {check.get('limits_hit')}; order rejected",
+        raise structured_error(
+            422,
+            error_code="RISK_CHECK_REJECTED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=f"risk check failed: {check.get('limits_hit')}; order rejected",
         )
 
     # 5. 审批（失败关闭）
     if not order_intent.approval_id:
-        raise HTTPException(
-            status_code=422, detail="approval_id is required for state-changing orders"
+        raise structured_error(
+            422,
+            error_code="APPROVAL_REQUIRED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message="approval_id is required for state-changing orders",
         )
     if not is_approved(order_intent.approval_id):
-        raise HTTPException(
-            status_code=422,
-            detail=f"approval {order_intent.approval_id} is not APPROVED; order rejected",
+        raise structured_error(
+            422,
+            error_code="APPROVAL_NOT_APPROVED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"approval {order_intent.approval_id} is not APPROVED; order rejected"
+            ),
         )
 
     # 6. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
     if not storage.record_idempotency_key(idempotency_key, request_hash):
-        raise HTTPException(
-            status_code=409,
-            detail=(
+        raise structured_error(
+            409,
+            error_code="IDEMPOTENCY_IN_FLIGHT",
+            phase="SUBMITTING",
+            retryable=True,
+            submission_unknown=True,
+            message=(
                 "duplicate idempotency key (concurrent request won); "
                 "no new order created"
             ),
@@ -215,8 +294,34 @@ def request_order(market: Market, intent: dict,
     try:
         order_id = adapter.request_order(order_intent.model_dump(mode="json"))
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    storage.finalize_idempotency_key(idempotency_key, order_id)
+        raise structured_error(
+            422,
+            error_code="VENUE_REJECTED",
+            phase="VENUE",
+            retryable=False,
+            submission_unknown=False,
+            message=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise structured_error(
+            503,
+            error_code="VENUE_SUBMIT_UNKNOWN",
+            phase="SUBMITTING",
+            retryable=False,
+            submission_unknown=True,
+            message=str(exc),
+        ) from exc
+    try:
+        storage.finalize_idempotency_key(idempotency_key, order_id)
+    except Exception as exc:
+        raise structured_error(
+            503,
+            error_code="LOCAL_PERSIST_FAILED",
+            phase="POST_SUBMIT",
+            retryable=True,
+            submission_unknown=True,
+            message=str(exc),
+        ) from exc
     audit.record(
         "order.submitted", principal.name, market.value, order_id,
         detail=f"intent={order_intent.idempotency_key} "

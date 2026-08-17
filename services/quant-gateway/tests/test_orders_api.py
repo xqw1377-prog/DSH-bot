@@ -84,10 +84,20 @@ def make_snapshot(**overrides) -> RiskSnapshot:
     return RiskSnapshot(**base)
 
 
+def error_body(resp) -> dict:
+    detail = resp.json()["detail"]
+    if isinstance(detail, dict):
+        return detail
+    return {"message": str(detail)}
+
+
 def test_order_rejected_without_risk_snapshot(client, risk_pass):
     resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
     assert resp.status_code == 422
-    assert "fail-closed" in resp.json()["detail"]
+    body = error_body(resp)
+    assert "fail-closed" in body["message"]
+    assert body["phase"] == "PRE_SUBMIT"
+    assert body["submission_unknown"] is False
 
 
 def test_order_rejected_when_limits_hit(client, risk_pass):
@@ -96,11 +106,36 @@ def test_order_rejected_when_limits_hit(client, risk_pass):
     assert resp.status_code == 422
 
 
+def test_critical_risk_engages_kill_switch(client, monkeypatch):
+    from quant_gateway.adapters import get_adapter
+
+    monkeypatch.setattr(
+        orders_router, "check_order_risk",
+        lambda base_url, **payload: {
+            "passed": False,
+            "limits_hit": ["equity_unavailable"],
+            "severity": "CRITICAL",
+            "kill_switch": True,
+        },
+    )
+    register_risk_snapshot(make_snapshot())
+    resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
+    assert resp.status_code == 422
+    adapter = get_adapter(Market.A_SHARE)
+    assert adapter.stopped is True
+    audit = client.get("/v1/audit").json()
+    assert any(e["action"] == "kill_switch.requested" for e in audit)
+    assert any(e["action"] == "kill_switch.succeeded" for e in audit)
+
+
 def test_order_rejected_when_risk_policy_rejects(client, risk_reject):
     register_risk_snapshot(make_snapshot())
     resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
     assert resp.status_code == 422
-    assert "risk check failed" in resp.json()["detail"]
+    body = error_body(resp)
+    assert "risk check failed" in body["message"]
+    assert body["phase"] == "PRE_SUBMIT"
+    assert body["submission_unknown"] is False
 
 
 def test_order_rejected_when_risk_policy_unreachable(client, monkeypatch):
@@ -111,7 +146,12 @@ def test_order_rejected_when_risk_policy_unreachable(client, monkeypatch):
     register_risk_snapshot(make_snapshot())
     resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
     assert resp.status_code == 503
-    assert "fail-closed" in resp.json()["detail"]
+    body = error_body(resp)
+    assert body["error_code"] == "RISK_POLICY_UNAVAILABLE"
+    assert body["phase"] == "PRE_SUBMIT"
+    assert body["retryable"] is True
+    assert body["submission_unknown"] is False
+    assert "fail-closed" in body["message"]
 
 
 def test_order_rejected_without_approved_approval(client, risk_pass):
@@ -171,7 +211,9 @@ def test_same_key_different_body_conflicts(client, risk_pass):
         ),
     )
     assert resp.status_code == 409
-    assert "different request body" in resp.json()["detail"]
+    assert "different request body" in error_body(resp)["message"]
+    assert error_body(resp)["phase"] == "PRE_SUBMIT"
+    assert error_body(resp)["submission_unknown"] is False
 
 
 def test_concurrent_duplicate_requests_submit_exactly_once(client, risk_pass):
@@ -233,14 +275,17 @@ def test_crash_after_venue_accept_recovers_same_order(risk_pass, monkeypatch):
     monkeypatch.setattr(orders_router.storage, "finalize_idempotency_key",
                         crashing_finalize)
     first = client.post("/v1/markets/A_SHARE/orders", json=body)
-    assert first.status_code == 500  # 崩溃
+    assert first.status_code == 503
+    assert error_body(first)["error_code"] == "LOCAL_PERSIST_FAILED"
+    assert error_body(first)["submission_unknown"] is True
     monkeypatch.setattr(orders_router.storage, "finalize_idempotency_key",
                         real_finalize)
 
     # 宽限窗口内重试：在途 409，禁止恢复判定
     early = client.post("/v1/markets/A_SHARE/orders", json=body)
     assert early.status_code == 409
-    assert "in flight" in early.json()["detail"]
+    assert "in flight" in error_body(early)["message"]
+    assert error_body(early)["submission_unknown"] is True
 
     # 老化幂等键（越过宽限窗口）
     with gw_storage.locked_conn() as conn:
@@ -262,7 +307,7 @@ def test_crash_after_venue_accept_recovers_same_order(risk_pass, monkeypatch):
     # 再重试：普通幂等重放 409，指向已认领订单
     again = client.post("/v1/markets/A_SHARE/orders", json=body)
     assert again.status_code == 409
-    assert "A_SHARE-ord-1" in again.json()["detail"]
+    assert "A_SHARE-ord-1" in error_body(again)["message"]
 
     audit = client.get("/v1/audit").json()
     assert any(e["action"] == "order.submission_recovered" for e in audit)
