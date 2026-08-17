@@ -229,3 +229,55 @@ def test_chief_is_strictly_read_only():
     assert order_events == []
     # 汇总记忆持续产出
     assert len(session.memory.recent(kind="market-summary")) >= 1
+
+
+def test_chief_summarizes_bot_health_and_incidents():
+    """Bot 健康度汇总：从 Runtime 账本（同库只读）聚合 tick 失败与任务状态。"""
+    # 注入 crypto-bot 的失败与任务状态（模拟另一 Bot 的账本痕迹）
+    from dsh_runtime import BotSession as BS, Profile as PF
+    from dsh_runtime import reset
+    reset()
+    fake = BS.for_profile(PF(
+        name="crypto-bot", description="", market="CRYPTO",
+        primary_tools=frozenset(), prohibited=frozenset(),
+    ))
+    fake.events.emit("bot/tick.failed", "CRYPTO", "system", "crypto-bot",
+                     {"error": "upstream down"})
+    fake.tasks.create("paper-order", "sig-1", {"signal_id": "sig-1"})
+    fake.events.emit("incident/opened", "CRYPTO", "bot", "crypto-bot",
+                     {"reason": "test"})
+
+    agent, session = _agent_and_session()
+    run_once(session, agent)
+
+    summaries = session.events.query("market/chief.summary")
+    assert len(summaries) == 1
+    payload = summaries[0]["payload"]
+    assert "crypto-bot" in payload["bots"]
+    bot = payload["bots"]["crypto-bot"]
+    assert bot["tick_failed_recent"] == 1
+    assert bot["health"] == "degraded"
+    assert bot["tasks"].get("SIGNAL_RECEIVED") == 1
+    assert payload["open_incidents"] == 1
+
+
+def test_chief_health_queries_are_read_only():
+    """健康度查询只读 Runtime 账本：不新增任何 Bot 任务或事件。"""
+    from dsh_runtime import reset
+    from dsh_runtime.store import _get
+
+    reset()
+    agent, session = _agent_and_session()
+    conn = _get()
+    before_tasks = conn.execute("SELECT COUNT(*) FROM bot_tasks").fetchone()[0]
+    before_events = conn.execute(
+        "SELECT COUNT(*) FROM domain_events WHERE actor_id != 'market-chief'"
+    ).fetchone()[0]
+
+    run_once(session, agent)
+
+    assert conn.execute("SELECT COUNT(*) FROM bot_tasks").fetchone()[0] == before_tasks
+    after_events = conn.execute(
+        "SELECT COUNT(*) FROM domain_events WHERE actor_id != 'market-chief'"
+    ).fetchone()[0]
+    assert after_events == before_events
