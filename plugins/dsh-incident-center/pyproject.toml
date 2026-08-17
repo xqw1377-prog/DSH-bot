@@ -1,0 +1,13 @@
+[project]
+name = "dsh-incident-center"
+version = "0.1.0"
+description = "事故中心插件：异常检测分类、自动降风险、停机/恢复/复盘流程，Kill Switch 独立于 LLM"
+requires-python = ">=3.12"
+dependencies = ["dsh-gateway-client", "dsh-contracts"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
