@@ -43,9 +43,15 @@ export function ApprovalsPanel() {
     setDecidingId(id);
     setError(null);
     try {
+      const csrf = await fetch("/api/csrf").then((r) => r.json()) as {
+        csrf_token?: string;
+      };
       const res = await fetch(`/api/approvals/${id}/decide`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf.csrf_token || "",
+        },
         body: JSON.stringify({ decision }),
       });
       if (!res.ok) {

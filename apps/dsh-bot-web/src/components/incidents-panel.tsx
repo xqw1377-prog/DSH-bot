@@ -27,9 +27,15 @@ export function IncidentsPanel() {
     setStopping(true);
     setError(null);
     try {
+      const csrf = await fetch("/api/csrf").then((r) => r.json()) as {
+        csrf_token?: string;
+      };
       const res = await fetch("/api/control/emergency-stop", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf.csrf_token || "",
+        },
         body: JSON.stringify({ market }),
       });
       if (!res.ok) {
