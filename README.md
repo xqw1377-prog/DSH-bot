@@ -94,6 +94,7 @@ cp .env.local.example .env.local   # 统一 DSH_ENV / 账户 / DB / 服务地址
 | `QUANT_GATEWAY_READ_ONLY` | `1` 时包装已注册适配器，禁止资金动作 |
 | `QUANT_GATEWAY_SNAPSHOT_DIR` | 只读行情/账户快照目录（`CRYPTO.json` / `A_SHARE.json`） |
 | `QUANT_GATEWAY_PUBLIC_TICKER_URL` | 可选公开行情 URL，含 `{symbol}`；失败则 `data_fresh=false`，不编造价格 |
+| `QUANT_CRYPTO_READONLY_URL` | 现有币量化系统只读 HTTP 根地址；写入一律 403 |
 | `DSH_CRYPTO_MODE` | `paper` / `shadow`；`live` 启动失败，直到实盘适配器与身份系统就绪 |
 | `DSH_SESSION_USER` / `DSH_WEB_ORIGIN` | 生产写 BFF 的登录身份与 CSRF Origin；缺省则写接口 503 |
 

@@ -19,6 +19,10 @@ async def lifespan(_app: FastAPI):
         from quant_gateway.adapters.snapshot import register_snapshot_adapters
 
         register_snapshot_adapters()
+    if os.environ.get("QUANT_CRYPTO_READONLY_URL"):
+        from quant_gateway.adapters.http_readonly import register_http_readonly_adapters
+
+        register_http_readonly_adapters()
     if os.environ.get("QUANT_GATEWAY_READ_ONLY") == "1":
         from quant_gateway.adapters.registry import wrap_readonly
 
