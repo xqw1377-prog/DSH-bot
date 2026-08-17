@@ -26,13 +26,12 @@ router = APIRouter(dependencies=[Depends(require_write)])
 
 RISK_POLICY_URL = os.environ.get("RISK_POLICY_URL", "http://127.0.0.1:8003")
 
-# 内存中的风险快照；生产应由 risk-policy 生成并持久化。
-_risk_snapshots: dict[str, RiskSnapshot] = {}
-
-
 def register_risk_snapshot(snapshot: RiskSnapshot) -> None:
-    """测试/联调辅助：注册风险快照。生产由 risk-policy 写入。"""
-    _risk_snapshots[snapshot.risk_snapshot_id] = snapshot
+    """注册风险快照（持久化，多 worker 可见）。生产由 risk-policy 写入。"""
+    storage.save_risk_snapshot(
+        snapshot.risk_snapshot_id, snapshot.market.value,
+        snapshot.model_dump(mode="json"),
+    )
 
 
 def _account_equity(adapter, account_id: str):
@@ -106,7 +105,8 @@ def request_order(market: Market, intent: dict,
         )
 
     # 3. 风险快照（失败关闭：查不到快照即拒绝）
-    snapshot = _risk_snapshots.get(order_intent.risk_snapshot_id)
+    raw = storage.get_risk_snapshot(order_intent.risk_snapshot_id)
+    snapshot = RiskSnapshot.model_validate(raw) if raw is not None else None
     if snapshot is None:
         raise HTTPException(
             status_code=422,

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/order/partially_filled.json",
+  "title": "OrderPartiallyFilled",
+  "type": "object",
+  "required": [
+    "order_id",
+    "market",
+    "filled_quantity"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "filled_quantity": {
+      "type": "string",
+      "description": "decimal string"
+    },
+    "remaining_quantity": {
+      "type": "string",
+      "description": "decimal string"
+    },
+    "task_id": {
+      "type": "string"
+    }
+  }
+}

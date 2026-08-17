@@ -339,8 +339,54 @@ class CryptoAgent:
         )
         session.tasks.transition(task["task_id"], "FILLED")
         session.memory.remember(
-            f"订单 {order_id} 已成交并对账",
+            f"订单 {order_id} 已成交",
             kind="order-filled", tags=[task["task_id"], order_id],
+        )
+        self._reconcile_account(session, task)
+
+    def _reconcile_account(self, session: BotSession, task: dict) -> None:
+        """账户对账：核对持仓与账户，通过后任务才能到达终态 RECONCILED。"""
+        order_id = task["order_id"]
+        expected = Decimal(str(task["payload"].get("quantity", "0.01")))
+        symbol = task["payload"]["symbol"]
+        try:
+            session.use("query_positions")
+            positions = self.gateway.get_positions(
+                Market.CRYPTO, account_id=self.account_id
+            )
+            session.use("query_accounts")
+            accounts = self.gateway.get_account_summary(Market.CRYPTO)
+        except GatewayError as exc:
+            session.memory.remember(
+                f"订单 {order_id} 对账数据获取失败（保持 FILLED 待重试）: {exc}",
+                kind="error", tags=[task["task_id"]],
+            )
+            return
+        match = next((p for p in positions if p["symbol"] == symbol), None)
+        if match is None or Decimal(str(match["quantity"])) < expected:
+            session.events.emit(
+                "account/mismatch", "CRYPTO", "bot", self.name,
+                {"task_id": task["task_id"], "order_id": order_id,
+                 "expected_quantity": str(expected),
+                 "positions_quantity": str(match["quantity"]) if match else None},
+            )
+            session.memory.remember(
+                f"对账异常：订单 {order_id} 成交 {expected} 但持仓不足，"
+                f"任务保持 FILLED 等待人工核查",
+                kind="error", tags=[task["task_id"], "reconcile-mismatch"],
+            )
+            return
+        session.events.emit(
+            "account/reconciled", "CRYPTO", "bot", self.name,
+            {"task_id": task["task_id"], "order_id": order_id,
+             "symbol": symbol, "quantity": str(expected),
+             "positions_quantity": str(match["quantity"]),
+             "equity": str(accounts[0]["equity"]) if accounts else None},
+        )
+        session.tasks.transition(task["task_id"], "RECONCILED")
+        session.memory.remember(
+            f"订单 {order_id} 对账通过（{symbol} {expected}），任务完成",
+            kind="order-reconciled", tags=[task["task_id"], order_id],
         )
 
     # ---- 新信号处理 ----

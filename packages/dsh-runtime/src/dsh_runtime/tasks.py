@@ -48,8 +48,9 @@ class TaskError(ValueError):
 
 
 class TaskStore:
-    def __init__(self, bot: str):
+    def __init__(self, bot: str, events=None):
         self.bot = bot
+        self._events = events
 
     def create(self, kind: str, subject_id: str, payload: dict) -> str:
         from .store import _get
@@ -64,6 +65,11 @@ class TaskStore:
              datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
         )
         _get().commit()
+        if self._events is not None:
+            self._events.emit(
+                "bot/task.created", "GLOBAL", "bot", self.bot,
+                {"task_id": task_id, "kind": kind, "subject_id": subject_id},
+            )
         return task_id
 
     def get(self, task_id: str) -> dict | None:
@@ -116,4 +122,9 @@ class TaskStore:
         _get().commit()
         result = self.get(task_id)
         assert result is not None
+        if self._events is not None:
+            self._events.emit(
+                "bot/task.transitioned", "GLOBAL", "bot", self.bot,
+                {"task_id": task_id, "from": task["status"], "to": target},
+            )
         return result
