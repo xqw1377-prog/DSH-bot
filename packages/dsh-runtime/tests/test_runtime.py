@@ -47,8 +47,11 @@ def test_memory_and_events_roundtrip():
     assert session.memory.has_tagged("signal:s-1")
     assert not session.memory.has_tagged("signal:s-2")
 
-    session.events.emit("approval/requested", "CRYPTO", "bot", "t",
-                        {"approval_id": "appr-1"})
+    session.events.emit("approval/requested", "CRYPTO", "bot", "t", {
+        "approval_id": "appr-1", "market": "CRYPTO",
+        "requested_by_bot": "t", "subject_type": "order",
+        "subject_id": "sig-1", "requested_at": "2026-01-01T00:00:00Z",
+    })
     events = session.events.query("approval/requested")
     assert len(events) == 1
     assert events[0]["payload"]["approval_id"] == "appr-1"
@@ -75,3 +78,21 @@ def test_run_once_swallows_agent_failure_and_records_event():
     assert len(failed) == 1
     assert "upstream down" in failed[0]["payload"]["error"]
     assert session.events.query("bot/tick.finished")
+
+
+def test_event_payload_schema_validation_enforced():
+    """存在 schema 的事件类型：payload 违反契约必须立即失败。"""
+    session = BotSession.for_profile(Profile(
+        name="t", description="", market="CRYPTO",
+        primary_tools=frozenset(), prohibited=frozenset(),
+    ))
+    # order/submitted schema 要求 order_id/idempotency_key/market/approval_id
+    with pytest.raises(ValueError, match="violates schema"):
+        session.events.emit("order/submitted", "CRYPTO", "bot", "t",
+                            {"bad": "payload"})
+    # 合法 payload 通过
+    session.events.emit("order/submitted", "CRYPTO", "bot", "t", {
+        "order_id": "o-1", "idempotency_key": "k-1", "market": "CRYPTO",
+        "approval_id": "a-1", "submitted_at": "2026-01-01T00:00:00Z",
+    })
+    assert len(session.events.query("order/submitted")) == 1

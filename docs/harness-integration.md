@@ -45,3 +45,23 @@
 
 兼容层失败时删除 `packages/dsh-harness-adapter` 并恢复
 `run_dsh.py` 使用 `dsh-runtime.run_forever`，其余代码零改动。
+
+---
+
+## 附：SQLite 持久化能力边界（当前声明）
+
+**支持**（已由测试验证）：
+- 单机部署，uvicorn 多 worker（独立连接 + WAL + busy_timeout +
+  `BEGIN IMMEDIATE` 事务抢占 + PRIMARY KEY 唯一约束）
+- 本地 Paper / Shadow 环境的全部闭环（审批、幂等、审计、崩溃恢复）
+
+**不支持 / 未验证**：
+- 多节点 Gateway 同时写入同一数据库
+- 共享网络文件系统（NFS/SMB）上的 SQLite（文件锁语义不可靠）
+- 跨机高可用故障切换
+
+**真实资金阶段要求**（二选一）：
+1. 迁移到 PostgreSQL（存储层 `storage.py` 单文件替换，SQL 方言差异小）；
+2. 或明确约定 Gateway 保持单实例写入（前置负载均衡只做读分流）。
+
+在上述任一条件满足前，系统只能用于 Paper/Testnet。

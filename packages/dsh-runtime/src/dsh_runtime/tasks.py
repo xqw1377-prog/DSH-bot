@@ -13,20 +13,26 @@ from datetime import UTC, datetime
 
 # 任务只能沿主链推进；终态不可逆
 _TRANSITIONS: dict[str, set[str]] = {
-    "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED"},
-    "PREVIEWED": {"AWAITING_APPROVAL", "FAILED"},
+    # 请求确定未到达交易系统（预览/审批/再校验失败）→ PRE_SUBMIT_FAILED
+    "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED", "PRE_SUBMIT_FAILED"},
+    "PREVIEWED": {"AWAITING_APPROVAL", "FAILED", "PRE_SUBMIT_FAILED"},
     "AWAITING_APPROVAL": {
         "APPROVED_SUBMITTING", "REJECTED", "EXPIRED",
-        "APPROVAL_UNKNOWN", "FAILED",
+        "APPROVAL_UNKNOWN", "FAILED", "PRE_SUBMIT_FAILED",
     },
-    "APPROVED_SUBMITTING": {"SUBMITTED", "FAILED"},
+    # 已尝试提交但结果未知（网络错误/网关崩溃窗口）→ SUBMISSION_UNKNOWN：
+    # 禁止重提，只能通过幂等键查询认领或确认失败
+    "APPROVED_SUBMITTING": {"SUBMITTED", "FAILED", "SUBMISSION_UNKNOWN"},
+    "SUBMISSION_UNKNOWN": {"SUBMITTED", "FAILED"},
     # 订单生命周期（对账前均非终态）
+    # UNKNOWN 隔离超时可从任何在途订单状态直达 INCIDENT
     "SUBMITTED": {
         "ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED",
-        "CANCELLED", "ORDER_REJECTED", "FAILED",
+        "CANCELLED", "ORDER_REJECTED", "INCIDENT", "FAILED",
     },
     "ACKNOWLEDGED": {
-        "PARTIALLY_FILLED", "FILLED", "CANCELLED", "ORDER_REJECTED", "FAILED",
+        "PARTIALLY_FILLED", "FILLED", "CANCELLED", "ORDER_REJECTED",
+        "INCIDENT", "FAILED",
     },
     "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELLED", "FAILED"},
     # 成交与对账分离：FILLED + MATCHED → DONE；FILLED + MISMATCH → INCIDENT；
@@ -40,12 +46,14 @@ _TRANSITIONS: dict[str, set[str]] = {
     "ORDER_REJECTED": set(),
     "APPROVAL_UNKNOWN": set(),
     "INCIDENT": set(),
+    "PRE_SUBMIT_FAILED": set(),
     "DONE": set(),
 }
 
 TERMINAL = {
     "RECONCILED", "FAILED", "REJECTED", "EXPIRED",
     "CANCELLED", "ORDER_REJECTED", "DONE", "APPROVAL_UNKNOWN", "INCIDENT",
+    "PRE_SUBMIT_FAILED",
 }
 
 
@@ -74,7 +82,8 @@ class TaskStore:
         if self._events is not None:
             self._events.emit(
                 "bot/task.created", "GLOBAL", "bot", self.bot,
-                {"task_id": task_id, "kind": kind, "subject_id": subject_id},
+                {"task_id": task_id, "kind": kind, "subject_id": subject_id,
+                 "bot": self.bot},
             )
         return task_id
 
@@ -133,6 +142,7 @@ class TaskStore:
         if self._events is not None:
             self._events.emit(
                 "bot/task.transitioned", "GLOBAL", "bot", self.bot,
-                {"task_id": task_id, "from": task["status"], "to": target},
+                {"task_id": task_id, "from": task["status"], "to": target,
+                 "bot": self.bot},
             )
         return result
