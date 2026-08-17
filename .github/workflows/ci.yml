@@ -35,7 +35,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Lint
-        run: pnpm -r lint
+        run: |
+          pnpm --filter @dsh-bot/client-sdk build  # 类型声明在 dist，先构建再 lint
+          pnpm -r lint
       - name: Build
         run: |
           pnpm --filter @dsh-bot/client-sdk build
