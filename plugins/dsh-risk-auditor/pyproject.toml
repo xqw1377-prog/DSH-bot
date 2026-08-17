@@ -1,13 +1,13 @@
 [project]
-name = "strategy-evolution"
+name = "dsh-risk-auditor"
 version = "0.1.0"
-description = "DSH Bot 策略持续进化服务：实验账本、验证门禁、策略晋级状态机"
+description = "独立风控验证插件：对 risk-policy 决定做独立二次校验，守住策略晋级/单笔风控红线"
 requires-python = ">=3.12"
 dependencies = [
+    "dsh-contracts",
+    "dsh-runtime",
     "fastapi>=0.111,<1",
     "uvicorn[standard]>=0.30,<1",
-    "httpx>=0.27,<1",
-    "dsh-contracts",
 ]
 
 [build-system]
