@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from dsh_contracts import ApprovalStatus, Market
 from quant_gateway import approval_store, audit
-from quant_gateway.auth import Principal, require_read, require_write
+from quant_gateway.auth import Principal, auth_enabled, require_read, require_write
 
 router = APIRouter()
 
@@ -30,7 +30,12 @@ class ApprovalDecision(BaseModel):
 
 
 @router.get("/approvals")
-def list_approvals(status: ApprovalStatus | None = None, market: Market | None = None):
+def list_approvals(
+    status: ApprovalStatus | None = None,
+    market: Market | None = None,
+    principal: Principal = Depends(require_read),
+):
+    _ = principal
     return [
         a.model_dump(mode="json")
         for a in approval_store.list_approvals(status=status, market=market)
@@ -54,7 +59,10 @@ def create_approval(req: ApprovalCreate,
 
 
 @router.get("/approvals/{approval_id}")
-def get_approval(approval_id: str):
+def get_approval(
+    approval_id: str, principal: Principal = Depends(require_read)
+):
+    _ = principal
     approval = approval_store.get_approval(approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="approval not found")
@@ -64,16 +72,17 @@ def get_approval(approval_id: str):
 @router.post("/approvals/{approval_id}/decide")
 def decide(approval_id: str, req: ApprovalDecision,
            principal: Principal = Depends(require_write)):
+    decided_by = principal.name if auth_enabled() else req.decided_by
     try:
         approval = approval_store.decide_approval(
-            approval_id, req.decision, req.decided_by
+            approval_id, req.decision, decided_by
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="approval not found") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(f"approval.{req.decision.value.lower()}",
-                 actor=f"human:{req.decided_by}", market=approval.market.value,
+                 actor=f"human:{decided_by}", market=approval.market.value,
                  subject_id=approval_id,
                  detail=f"via key '{principal.name}'")
     return approval.model_dump(mode="json")

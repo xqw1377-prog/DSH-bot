@@ -31,8 +31,32 @@ def resume_strategy(market: Market, strategy_id: str,
 
 
 @router.post("/markets/{market}/emergency-stop")
-def emergency_stop(market: Market, account_id: str | None = None,
-                   principal: Principal = Depends(require_write)):
-    get_adapter(market).emergency_stop(account_id=account_id)
-    audit.record("emergency.stop", principal.name, market.value, account_id)
-    return {"market": market, "account_id": account_id, "status": "STOPPED"}
+def emergency_stop(
+    market: Market,
+    account_id: str | None = None,
+    actor_id: str | None = None,
+    principal: Principal = Depends(require_write),
+):
+    actor = actor_id or principal.name
+    audit.record(
+        "kill_switch.requested", actor, market.value, account_id,
+        detail="manual emergency_stop",
+    )
+    try:
+        get_adapter(market).emergency_stop(account_id=account_id)
+    except Exception as exc:
+        audit.record(
+            "kill_switch.failed", actor, market.value, account_id, detail=str(exc),
+        )
+        raise
+    audit.record(
+        "kill_switch.succeeded", actor, market.value, account_id,
+        detail="manual emergency_stop",
+    )
+    audit.record("emergency.stop", actor, market.value, account_id)
+    return {
+        "market": market,
+        "account_id": account_id,
+        "actor_id": actor,
+        "status": "STOPPED",
+    }

@@ -53,3 +53,18 @@ def test_missing_equity_fails_closed():
     result = _check(equity="0")
     assert result["passed"] is False
     assert "equity_unavailable" in result["limits_hit"]
+    assert result["severity"] == "CRITICAL"
+    assert result["kill_switch"] is True
+
+
+def test_max_position_is_high_not_kill_switch():
+    result = _check(notional="1000000")
+    assert result["passed"] is False
+    assert result["severity"] == "HIGH"
+    assert result["kill_switch"] is False
+
+
+def test_loss_ratio_is_critical_kill_switch():
+    result = _check(worst_case_loss="20000", equity="1000000")
+    assert result["severity"] == "CRITICAL"
+    assert result["kill_switch"] is True

@@ -7,8 +7,8 @@
 - write：资金/状态变更接口（下单、撤单、审批决定、策略控制、审批创建）
 
 未配置任何 key 时为开发开放模式（全部放行），便于本地联调；
-生产必须配置。审批决定接口额外要求 decided_by 与 key 绑定的
-principal 一致，防止 Bot 伪造人工身份（见 routers/approvals.py）。
+生产必须配置。鉴权开启时审批 decided_by 由 Gateway 覆盖为 principal.name，
+客户端提交的 decided_by 无效（见 routers/approvals.py）。
 """
 
 import os
