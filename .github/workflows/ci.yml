@@ -61,7 +61,8 @@ jobs:
           version: 11.11.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # pnpm@11.11.0 需要 Node >= 22.13（依赖 node:sqlite）
+          node-version: 22
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
