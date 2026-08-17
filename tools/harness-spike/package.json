@@ -1,0 +1,5 @@
+{
+  "name": "dsh-spike-plugin",
+  "private": true,
+  "type": "module"
+}
