@@ -106,6 +106,41 @@ def test_order_rejected_when_limits_hit(client, risk_pass):
     assert resp.status_code == 422
 
 
+def test_kill_switch_blocks_new_orders_until_resume(client, risk_pass):
+    register_risk_snapshot(make_snapshot())
+    stopped = client.post("/v1/markets/A_SHARE/emergency-stop")
+    assert stopped.status_code == 200
+    health = client.get("/v1/markets/A_SHARE/health").json()
+    assert health["system_ok"] is False
+    assert health["trading_channel_ok"] is False
+
+    blocked = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(approval_id=approved_approval()),
+    )
+    assert blocked.status_code == 409
+    body = error_body(blocked)
+    assert body["error_code"] == "TRADING_HALTED"
+    assert body["phase"] == "PRE_SUBMIT"
+    assert body["submission_unknown"] is False
+
+    resumed = client.post("/v1/markets/A_SHARE/kill-switch/resume")
+    assert resumed.status_code == 200
+    health = client.get("/v1/markets/A_SHARE/health").json()
+    assert health["system_ok"] is True
+    assert health["trading_channel_ok"] is True
+
+    ok = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(
+            idempotency_key="after-resume",
+            approval_id=approved_approval(),
+        ),
+    )
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "SUBMITTED"
+
+
 def test_critical_risk_engages_kill_switch(client, monkeypatch):
     from quant_gateway.adapters import get_adapter
 

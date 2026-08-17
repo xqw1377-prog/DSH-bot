@@ -290,7 +290,24 @@ def request_order(market: Market, intent: dict,
             ),
         )
 
-    # 6. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
+    # 6. Kill Switch / 通道降级：禁止新提交，但不阻断已提交订单的幂等认领
+    health = adapter.get_health()
+    if not getattr(health, "system_ok", True) or not getattr(
+        health, "trading_channel_ok", True
+    ):
+        raise structured_error(
+            409,
+            error_code="TRADING_HALTED",
+            phase="PRE_SUBMIT",
+            retryable=True,
+            submission_unknown=False,
+            message=(
+                getattr(health, "detail", None)
+                or "trading channel not ok; order rejected"
+            ),
+        )
+
+    # 7. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
     if not storage.record_idempotency_key(idempotency_key, request_hash):
         raise structured_error(
             409,
@@ -306,6 +323,8 @@ def request_order(market: Market, intent: dict,
 
     try:
         order_id = adapter.request_order(order_intent.model_dump(mode="json"))
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise structured_error(
             422,

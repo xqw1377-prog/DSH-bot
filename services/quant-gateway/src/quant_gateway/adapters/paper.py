@@ -27,6 +27,7 @@ from dsh_contracts import (
 from quant_gateway import storage
 from quant_gateway.adapters.base import MarketAdapter
 from quant_gateway.adapters.registry import register_adapter
+from quant_gateway.errors import structured_error
 
 
 def _now() -> datetime:
@@ -156,6 +157,15 @@ class PaperAdapter(MarketAdapter):
         )
 
     def request_order(self, intent) -> str:
+        if self.stopped:
+            raise structured_error(
+                409,
+                error_code="TRADING_HALTED",
+                phase="PRE_SUBMIT",
+                retryable=True,
+                submission_unknown=False,
+                message="emergency stop engaged; order rejected",
+            )
         payload = intent if isinstance(intent, dict) else intent.model_dump(mode="json")
         if payload.get("account_id") != self._account_id:
             raise ValueError(

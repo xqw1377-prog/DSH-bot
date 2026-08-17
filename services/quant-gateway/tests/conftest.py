@@ -33,10 +33,12 @@ class FakeAdapter(MarketAdapter):
     def get_health(self) -> HealthStatus:
         return HealthStatus(
             market=self.market,
-            system_ok=True,
+            system_ok=not self.stopped,
             data_fresh=True,
-            trading_channel_ok=True,
+            trading_channel_ok=not self.stopped,
             clock_skew_ms=0,
+            degraded=self.stopped,
+            detail="emergency stop engaged" if self.stopped else None,
             as_of=datetime.now(UTC),
         )
 
@@ -80,6 +82,9 @@ class FakeAdapter(MarketAdapter):
 
     def emergency_stop(self, account_id: str | None = None) -> None:
         self.stopped = True
+
+    def resume_trading(self) -> None:
+        self.stopped = False
 
 
 def install_fake_adapters() -> None:

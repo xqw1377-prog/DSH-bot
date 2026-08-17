@@ -278,7 +278,21 @@ fi
 
 echo "[smoke] kill switch request/succeed/resume"
 curl -sf -X POST "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/emergency-stop" >/dev/null
+curl -sf "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/health" | python -c "
+import json,sys
+h=json.load(sys.stdin)
+assert h.get('system_ok') is False, h
+assert h.get('trading_channel_ok') is False, h
+print('kill switch halted', h.get('detail'))
+"
 curl -sf -X POST "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/kill-switch/resume" >/dev/null
+curl -sf "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/health" | python -c "
+import json,sys
+h=json.load(sys.stdin)
+assert h.get('system_ok') is True, h
+assert h.get('trading_channel_ok') is True, h
+print('kill switch resumed')
+"
 curl -sf "$QUANT_GATEWAY_URL/v1/audit" | python -c "
 import json,sys
 actions={r.get('action') for r in json.load(sys.stdin)}
