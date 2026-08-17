@@ -39,7 +39,9 @@ def resume_kill_switch(
 ):
     """Kill Switch 人工恢复。使用独立事件，不再借用 strategy.resumed。"""
     actor = actor_id or principal.name
-    get_adapter(market).resume_strategy(account_id or "*")
+    adapter = get_adapter(market)
+    adapter.resume_trading()
+    adapter.resume_strategy(account_id or "*")
     audit.record(
         "kill_switch.resumed", actor, market.value, account_id,
         detail="manual kill_switch resume",

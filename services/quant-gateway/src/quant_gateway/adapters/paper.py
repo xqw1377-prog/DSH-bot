@@ -245,6 +245,9 @@ class PaperAdapter(MarketAdapter):
     def emergency_stop(self, account_id: str | None = None) -> None:
         self.stopped = True
 
+    def resume_trading(self) -> None:
+        self.stopped = False
+
 
 def register_paper_adapters() -> None:
     register_adapter(Market.A_SHARE, PaperAdapter(Market.A_SHARE))

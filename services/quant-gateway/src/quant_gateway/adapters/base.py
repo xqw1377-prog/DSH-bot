@@ -67,3 +67,7 @@ class MarketAdapter(ABC):
 
     @abstractmethod
     def emergency_stop(self, account_id: str | None = None) -> None: ...
+
+    def resume_trading(self) -> None:
+        """清除 emergency_stop。默认无操作；Paper 必须恢复 system_ok。"""
+        return None
