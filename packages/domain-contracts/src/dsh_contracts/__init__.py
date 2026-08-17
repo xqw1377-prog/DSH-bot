@@ -10,6 +10,7 @@ from dsh_contracts.enums import (
     Market,
     OrderSide,
     OrderStatus,
+    ReconciliationStatus,
     StrategyStage,
     TaskStatus,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "OrderSide",
     "OrderStatus",
     "Position",
+    "ReconciliationStatus",
     "RiskSnapshot",
     "Signal",
     "StrategyCandidate",

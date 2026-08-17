@@ -1,0 +1,13 @@
+[project]
+name = "dsh-a-stock-agent"
+version = "0.1.0"
+description = "A 股专业 Bot 插件：适配 A 股量化系统查询、解释信号、生成审批证据，T+1/涨跌停/停复牌感知"
+requires-python = ">=3.12"
+dependencies = ["dsh-gateway-client", "dsh-trade-approval", "dsh-contracts"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

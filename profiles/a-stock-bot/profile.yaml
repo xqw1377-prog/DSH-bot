@@ -6,6 +6,9 @@ primary_tools:
   - query_positions
   - query_signals
   - preview_order
+  - query_approvals
+  - submit_order
+  - query_order_status
   - explain_signal
 prohibited:
   - direct_order

@@ -70,15 +70,17 @@ class TaskStore:
         from .store import _get
 
         row = _get().execute(
-            "SELECT task_id, kind, status, subject_id, approval_id, order_id,"
-            " idempotency_key, payload, created_at, updated_at"
+            "SELECT task_id, kind, status, reconciliation_status, subject_id,"
+            " approval_id, order_id, idempotency_key, payload,"
+            " created_at, updated_at"
             " FROM bot_tasks WHERE task_id = ? AND bot = ?",
             (task_id, self.bot),
         ).fetchone()
         if row is None:
             return None
-        keys = ("task_id", "kind", "status", "subject_id", "approval_id",
-                "order_id", "idempotency_key", "payload", "created_at", "updated_at")
+        keys = ("task_id", "kind", "status", "reconciliation_status",
+                "subject_id", "approval_id", "order_id", "idempotency_key",
+                "payload", "created_at", "updated_at")
         task = dict(zip(keys, row))
         task["payload"] = json.loads(task["payload"])
         return task
@@ -117,3 +119,52 @@ class TaskStore:
         result = self.get(task_id)
         assert result is not None
         return result
+
+    # ---- 对账状态（与执行状态正交分离，见 PRD 11.4）----
+
+    _RECONCILE_TRANSITIONS: dict[str, set[str]] = {
+        "PENDING": {"IN_PROGRESS", "MATCHED", "MISMATCH", "RECONCILED"},
+        "IN_PROGRESS": {"MATCHED", "MISMATCH", "RECONCILED"},
+        "MATCHED": {"RECONCILED"},
+        "MISMATCH": set(),
+        "RECONCILED": set(),
+    }
+
+    def set_reconciliation_status(
+        self, task_id: str, target: str,
+    ) -> dict:
+        """独立推进对账状态。与执行状态 (status) 正交：
+        一个 FILLED 订单的对账状态可独立从 PENDING → IN_PROGRESS →
+        MATCHED → RECONCILED，或失败到 MISMATCH。
+        """
+        from .store import _get
+
+        task = self.get(task_id)
+        if task is None:
+            raise TaskError(f"task not found: {task_id}")
+        current = task["reconciliation_status"]
+        if target not in self._RECONCILE_TRANSITIONS.get(current, set()):
+            raise TaskError(
+                f"illegal reconciliation transition {current} -> {target}"
+            )
+        now = datetime.now(UTC).isoformat()
+        _get().execute(
+            "UPDATE bot_tasks SET reconciliation_status = ?, updated_at = ? "
+            "WHERE task_id = ? AND bot = ?",
+            (target, now, task_id, self.bot),
+        )
+        _get().commit()
+        result = self.get(task_id)
+        assert result is not None
+        return result
+
+    def find_by_reconciliation_status(self, *statuses: str) -> list[dict]:
+        from .store import _get
+
+        rows = _get().execute(
+            "SELECT task_id FROM bot_tasks WHERE bot = ? AND "
+            "reconciliation_status IN "
+            f"({','.join('?' * len(statuses))}) ORDER BY created_at",
+            (self.bot, *statuses),
+        ).fetchall()
+        return [t for t in (self.get(r[0]) for r in rows) if t]

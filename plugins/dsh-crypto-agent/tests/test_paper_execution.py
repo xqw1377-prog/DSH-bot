@@ -40,6 +40,9 @@ class ExecutionAdapter(MarketAdapter):
         self.market = market
         self.submitted: list[dict] = []
         self.order_status: dict[str, str] = {}
+        # 可控点：fresh preview 的风险乘数（模拟市场变化后风险上升）
+        # 1.0 = 与首次预览一致；1.20 = 风险增加 20%
+        self.preview_risk_factor: Decimal = Decimal("1.0")
 
     # -- 可控点 --
     def set_order_status(self, order_id: str, status: str):
@@ -81,6 +84,7 @@ class ExecutionAdapter(MarketAdapter):
     def preview_order(self, intent):
         qty = Decimal(str(intent["quantity"])) if isinstance(intent, dict) else intent.quantity
         notional = qty * Decimal("100")
+        factor = self.preview_risk_factor
         return OrderPreview(
             intent=intent, estimated_cost=notional,
             estimated_slippage=Decimal("0.0005"),
@@ -88,8 +92,8 @@ class ExecutionAdapter(MarketAdapter):
                 risk_snapshot_id=f"rs-sig-x", market=self.market,
                 account_id="paper-crypto-001",
                 position_before=Decimal("0"), position_after=qty,
-                risk_budget_delta=notional,
-                worst_case_loss=notional * Decimal("0.01"),
+                risk_budget_delta=notional * factor,
+                worst_case_loss=notional * Decimal("0.01") * factor,
                 limits_hit=[], as_of=datetime.now(UTC),
             ),
         ).model_dump(mode="json")
@@ -248,10 +252,12 @@ def test_duplicate_processing_yields_single_order():
     order_id = session.tasks.find_by_status("RECONCILED")[0]["order_id"]
 
     # 模拟重复消息：把任务拨回待审批执行态，再 tick
+    # 同时重置 reconciliation_status（执行状态回退，对账状态也回退）
     from dsh_runtime.store import _get
     conn = _get()
     conn.execute(
-        "UPDATE bot_tasks SET status = 'APPROVED_SUBMITTING', order_id = NULL"
+        "UPDATE bot_tasks SET status = 'APPROVED_SUBMITTING',"
+        " order_id = NULL, reconciliation_status = 'PENDING'"
         " WHERE task_id LIKE '%sig-x'"
     )
     conn.commit()
@@ -281,7 +287,8 @@ def test_crash_after_submit_recovers_without_resubmission():
     from dsh_runtime.store import _get
     conn = _get()
     conn.execute(
-        "UPDATE bot_tasks SET status = 'APPROVED_SUBMITTING', order_id = NULL"
+        "UPDATE bot_tasks SET status = 'APPROVED_SUBMITTING',"
+        " order_id = NULL, reconciliation_status = 'PENDING'"
         " WHERE task_id LIKE '%sig-x'"
     )
     conn.commit()
@@ -363,3 +370,114 @@ def test_risk_snapshot_change_fails_closed():
     run_once(session, agent)
     assert ADAPTER.submitted == []
     assert len(session.tasks.find_by_status("FAILED")) == 1
+
+
+def test_risk_within_tolerance_executes():
+    """风险在容忍范围内（fresh worst_case_loss +3%）应放行，不失败关闭。
+
+    P0 修复：完全相等校验改为批准范围校验后，小幅风险变化不再拒绝订单。
+    模拟方式：审批后市场小幅变化，fresh preview 的 worst_case_loss 上升 3%。
+    """
+    agent, session = _agent_and_session()
+    task, _ = _drive_to_approved(session, agent)
+    # fresh preview 风险增加 3%（在 5% 容忍范围内）
+    ADAPTER.preview_risk_factor = Decimal("1.03")
+    run_once(session, agent)
+    # 应该执行（容忍范围内）
+    assert len(ADAPTER.submitted) == 1
+    assert len(session.tasks.find_by_status("FAILED")) == 0
+
+
+def test_risk_exceeds_tolerance_fails_closed():
+    """风险超出容忍范围（fresh worst_case_loss +20%）应失败关闭。
+
+    P0 修复：超过 5% 容忍上限的订单被拒绝。
+    模拟方式：审批后市场大幅变化，fresh preview 的 worst_case_loss 上升 20%。
+    """
+    agent, session = _agent_and_session()
+    task, _ = _drive_to_approved(session, agent)
+    # fresh preview 风险增加 20%（超出 5% 容忍上限）
+    ADAPTER.preview_risk_factor = Decimal("1.20")
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("FAILED")) == 1
+
+
+# ---- 8. execution_status 与 reconciliation_status 正交分离 ----
+
+def test_execution_and_reconciliation_status_separated():
+    """P0: execution_status (FILLED) 与 reconciliation_status (PENDING→RECONCILED)
+    是两个独立维度。订单 FILLED 后对账状态仍为 PENDING，对账完成后才 RECONCILED。
+    """
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    # 提交订单：adapter 的 get_order_status 返回 FILLED，执行状态到 FILLED，
+    # 同 tick 内 _reconcile_account 把对账状态从 PENDING 推到 RECONCILED
+    run_once(session, agent)
+
+    reconciled = session.tasks.find_by_status("RECONCILED")
+    assert len(reconciled) == 1
+    task = reconciled[0]
+    # 执行状态 = RECONCILED（任务终态），对账状态 = RECONCILED
+    assert task["reconciliation_status"] == "RECONCILED"
+
+
+def test_reconciliation_mismatch_sets_mismatch_status():
+    """P0: 对账不一致时 reconciliation_status = MISMATCH，任务 FAILED。"""
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+
+    # 模拟对账不一致：把持仓改为负数，然后手动重置任务到 FILLED + PENDING 重新对账
+    from dsh_contracts import Position
+    from datetime import UTC, datetime
+
+    original_get_positions = ADAPTER.get_positions
+
+    def bad_positions(account_id=None):
+        return [Position(
+            market=Market.CRYPTO, account_id="paper-crypto-001",
+            symbol="BTCUSDT", quantity="-1", available_quantity="-1",
+            frozen_quantity="0", avg_cost="67420", currency="USDT",
+            as_of=datetime.now(UTC),
+        )]
+
+    ADAPTER.get_positions = bad_positions
+    from dsh_runtime.store import _get
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET status = 'FILLED',"
+        " reconciliation_status = 'PENDING'"
+        " WHERE task_id LIKE '%sig-x'"
+    )
+    conn.commit()
+    run_once(session, agent)
+
+    failed = session.tasks.find_by_status("FAILED")
+    assert len(failed) == 1
+    assert failed[0]["reconciliation_status"] == "MISMATCH"
+    ADAPTER.get_positions = original_get_positions
+
+
+def test_reconciliation_survives_crash_restart():
+    """P0: 崩溃恢复——对账进行中重启，reconciliation_status 保持 IN_PROGRESS，
+    重启后能继续对账直至 RECONCILED。"""
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+
+    # 模拟崩溃：任务已 FILLED 但对账进行中（reconciliation_status = IN_PROGRESS）
+    from dsh_runtime.store import _get
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET status = 'FILLED',"
+        " reconciliation_status = 'IN_PROGRESS'"
+        " WHERE task_id LIKE '%sig-x'"
+    )
+    conn.commit()
+
+    # 重启后第一个 tick：应从 IN_PROGRESS 继续对账 → RECONCILED
+    run_once(session, agent)
+    reconciled = session.tasks.find_by_status("RECONCILED")
+    assert len(reconciled) == 1
+    assert reconciled[0]["reconciliation_status"] == "RECONCILED"

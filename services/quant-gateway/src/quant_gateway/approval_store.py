@@ -72,8 +72,17 @@ def list_approvals(
         rows = conn.execute(f"SELECT {_COLUMNS} FROM approvals").fetchall()
     for row in rows:
         approval = _row_to_approval(row)
-        if _expired(approval):
+        # 触发过期检查（会更新状态为 EXPIRED）
+        _expired(approval)
+        # 重新读取更新后的状态
+        with storage.locked_conn() as conn:
+            updated_row = conn.execute(
+                f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?",
+                (approval.approval_id,),
+            ).fetchone()
+        if updated_row is None:
             continue
+        approval = _row_to_approval(updated_row)
         if status is not None and approval.status != status:
             continue
         if market is not None and approval.market != market:
@@ -83,6 +92,11 @@ def list_approvals(
 
 
 def get_approval(approval_id: str) -> Approval | None:
+    """获取审批。返回 None 表示审批不存在（404）。
+
+    过期的审批不返回 None，而是返回 status=EXPIRED 的审批对象，
+    让调用方能区分「审批不存在」与「审批已过期」。
+    """
     with storage.locked_conn() as conn:
         row = conn.execute(
             f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?", (approval_id,)
@@ -90,9 +104,14 @@ def get_approval(approval_id: str) -> Approval | None:
     if row is None:
         return None
     approval = _row_to_approval(row)
-    if _expired(approval):
-        return None
-    return approval
+    # 过期审批：保存 EXPIRED 状态并返回，不返回 None
+    _expired(approval)
+    # 重新读取（_expired 可能已更新状态）
+    with storage.locked_conn() as conn:
+        row = conn.execute(
+            f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?", (approval_id,)
+        ).fetchone()
+    return _row_to_approval(row) if row else approval
 
 
 def decide_approval(

@@ -217,36 +217,48 @@ def record_idempotency_key(key: str, request_hash: str) -> bool:
 def mark_idempotency_submitted(key: str, order_id: str) -> None:
     """venue 已返回 order_id：进入 SUBMITTED（崩溃后可凭 order_id 恢复）。"""
     with locked_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "UPDATE idempotency_keys SET order_id = ?, status = 'SUBMITTED', "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
-            (order_id, key),
-        )
-        conn.commit()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE idempotency_keys SET order_id = ?, status = 'SUBMITTED', "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
+                (order_id, key),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def finalize_idempotency_key(key: str, order_id: str) -> None:
     """提交成功后标 COMPLETED 并回填权威订单 ID。"""
     with locked_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "UPDATE idempotency_keys SET order_id = ?, status = 'COMPLETED', "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
-            (order_id, key),
-        )
-        conn.commit()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE idempotency_keys SET order_id = ?, status = 'COMPLETED', "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
+                (order_id, key),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def mark_idempotency_failed(key: str) -> None:
     with locked_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "UPDATE idempotency_keys SET status = 'FAILED', "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
-            (key,),
-        )
-        conn.commit()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE idempotency_keys SET status = 'FAILED', "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
+                (key,),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def get_idempotency_entry(key: str) -> tuple[str | None, str] | None:
