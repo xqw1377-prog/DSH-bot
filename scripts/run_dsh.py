@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import sys
 import time
@@ -83,6 +85,10 @@ def main() -> int:
         os.environ.get("DSH_CRYPTO_MIN_STRENGTH", "0.6")
     ))
     parser.add_argument("--db", default=None, help="记忆/事件/任务 SQLite 路径")
+    parser.add_argument(
+        "--with-astock", action="store_true",
+        help="启用 A 股 Bot（交易时段内才会处理新信号）",
+    )
     args = parser.parse_args()
 
     if args.db:
