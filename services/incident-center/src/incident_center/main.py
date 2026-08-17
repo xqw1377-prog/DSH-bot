@@ -32,16 +32,22 @@ _conn: sqlite3.Connection | None = None
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS incidents (
-    incident_id  TEXT PRIMARY KEY,
-    fingerprint  TEXT NOT NULL UNIQUE,
-    source       TEXT NOT NULL,
-    market       TEXT,
-    severity     TEXT NOT NULL DEFAULT "NORMAL",
-    reason       TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT "OPEN",
-    occurrences  INTEGER NOT NULL DEFAULT 1,
-    opened_at    TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
+    incident_id     TEXT PRIMARY KEY,
+    fingerprint     TEXT NOT NULL,   -- 同类事故合并键（不含自由文本）
+    source          TEXT NOT NULL,
+    market          TEXT,
+    incident_type   TEXT NOT NULL,   -- 规则/类型 ID（如 order_unknown_quarantine）
+    severity        TEXT NOT NULL DEFAULT "NORMAL",
+    reason          TEXT,            -- 仅描述，不参与指纹
+    status          TEXT NOT NULL DEFAULT "OPEN",
+    occurrences     INTEGER NOT NULL DEFAULT 1,
+    opened_at       TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reported_events (
+    source_event_id TEXT PRIMARY KEY,   -- 消息级幂等：同一事件重复投递直接忽略
+    incident_id     TEXT NOT NULL,
+    first_seen_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS timeline (
     entry_id     TEXT PRIMARY KEY,
@@ -96,8 +102,15 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _fingerprint(source: str, reason: str, subject: str | None) -> str:
-    return sha256(f"{source}|{reason}|{subject or ''}".encode()).hexdigest()
+def _fingerprint(source: str, incident_type: str, market: str | None,
+                 subject: str | None) -> str:
+    """同类事故合并键：source_service + incident_type + market + subject。
+
+    刻意不含自由文本 reason：描述措辞变化不应产生新事故。
+    """
+    return sha256(
+        f"{source}|{incident_type}|{market or ''}|{subject or ''}".encode()
+    ).hexdigest()
 
 
 def _timeline(conn, incident_id: str, action: str, actor: str,
@@ -109,11 +122,13 @@ def _timeline(conn, incident_id: str, action: str, actor: str,
 
 
 class IncidentOpen(BaseModel):
-    source: str                 # 上报方（bot / service 名）
-    reason: str
+    source: str                     # 上报方（bot / service 名）
+    incident_type: str              # 规则/类型 ID，参与指纹
+    reason: str | None = None       # 仅描述，不参与指纹
     market: str | None = None
-    subject: str | None = None  # 关联对象（order_id / candidate_id…）
-    severity: str = "NORMAL"    # NORMAL | HIGH
+    subject: str | None = None      # 关联对象（order_id / candidate_id…）
+    severity: str = "NORMAL"        # NORMAL | HIGH
+    source_event_id: str | None = None  # 消息级幂等键（如 Runtime event_id）
 
 
 class IncidentAction(BaseModel):
@@ -123,47 +138,77 @@ class IncidentAction(BaseModel):
 
 @app.post("/v1/incidents", status_code=201)
 def open_incident(req: IncidentOpen) -> dict:
-    fp = _fingerprint(req.source, req.reason, req.subject)
+    """上报语义（消息幂等与指纹合并分离）：
+
+    - 相同 source_event_id 重复投递 → 完全幂等：不改计数、不写时间线
+    - 新 source_event_id + 已有指纹   → occurrences + 1
+    - RESOLVED 后重放旧 event_id     → 保持 RESOLVED
+    - RESOLVED 后出现新 event_id     → REOPENED（计数继续累计）
+    """
+    fp = _fingerprint(req.source, req.incident_type, req.market, req.subject)
     with locked_conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
+
+        # 消息级幂等：同一事件已处理过，直接返回现状
+        if req.source_event_id:
+            seen = conn.execute(
+                "SELECT incident_id FROM reported_events"
+                " WHERE source_event_id = ?", (req.source_event_id,)).fetchone()
+            if seen is not None:
+                conn.rollback()
+                incident = _get_incident(conn, seen[0])
+                incident["deduplicated"] = "event"
+                return incident
+
         row = conn.execute(
             "SELECT incident_id, status, occurrences FROM incidents"
             " WHERE fingerprint = ?", (fp,)).fetchone()
         if row is not None:
             incident_id, status, occurrences = row
-            # 同指纹重复上报：合并计数，不新建；已解决的事故重新打开
+            if status == "RESOLVED":
+                # 新事件使同类事故重新打开
+                conn.execute(
+                    "UPDATE incidents SET status = 'OPEN',"
+                    " occurrences = ?, updated_at = ? WHERE incident_id = ?",
+                    (occurrences + 1, _now(), incident_id))
+                _timeline(conn, incident_id, "reopened", req.source,
+                          f"occurrences={occurrences + 1}; {req.reason or ''}")
+            else:
+                conn.execute(
+                    "UPDATE incidents SET occurrences = ?, updated_at = ?"
+                    " WHERE incident_id = ?",
+                    (occurrences + 1, _now(), incident_id))
+                _timeline(conn, incident_id, "re-reported", req.source,
+                          f"occurrences={occurrences + 1}; {req.reason or ''}")
+        else:
+            incident_id = f"inc-{uuid4().hex[:12]}"
             conn.execute(
-                "UPDATE incidents SET occurrences = ?, status = ?,"
-                " updated_at = ? WHERE incident_id = ?",
-                (occurrences + 1,
-                 "OPEN" if status == "RESOLVED" else status,
-                 _now(), incident_id),
+                "INSERT INTO incidents (incident_id, fingerprint, source,"
+                " market, incident_type, severity, reason, opened_at,"
+                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (incident_id, fp, req.source, req.market, req.incident_type,
+                 req.severity, req.reason, _now(), _now()),
             )
-            _timeline(conn, incident_id, "reopened" if status == "RESOLVED"
-                      else "re-reported", req.source,
-                      f"occurrences={occurrences + 1}")
-            conn.commit()
-            return _get_incident(conn, incident_id)
-        incident_id = f"inc-{uuid4().hex[:12]}"
-        conn.execute(
-            "INSERT INTO incidents (incident_id, fingerprint, source, market,"
-            " severity, reason, opened_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (incident_id, fp, req.source, req.market, req.severity,
-             req.reason, _now(), _now()),
-        )
-        _timeline(conn, incident_id, "opened", req.source, req.reason)
+            _timeline(conn, incident_id, "opened", req.source, req.reason)
+
+        if req.source_event_id:
+            conn.execute(
+                "INSERT INTO reported_events VALUES (?, ?, ?)",
+                (req.source_event_id, incident_id, _now()),
+            )
         conn.commit()
-        return _get_incident(conn, incident_id)
+        incident = _get_incident(conn, incident_id)
+        incident["deduplicated"] = "none"
+        return incident
 
 
 def _get_incident(conn, incident_id: str) -> dict:
     row = conn.execute(
-        "SELECT incident_id, source, market, severity, reason, status,"
-        " occurrences, opened_at, updated_at FROM incidents"
+        "SELECT incident_id, source, market, incident_type, severity,"
+        " reason, status, occurrences, opened_at, updated_at FROM incidents"
         " WHERE incident_id = ?", (incident_id,)).fetchone()
-    keys = ("incident_id", "source", "market", "severity", "reason",
-            "status", "occurrences", "opened_at", "updated_at")
+    keys = ("incident_id", "source", "market", "incident_type", "severity",
+            "reason", "status", "occurrences", "opened_at", "updated_at")
     return dict(zip(keys, row))
 
 
