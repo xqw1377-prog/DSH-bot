@@ -40,6 +40,7 @@ class ExecutionAdapter(MarketAdapter):
         self.market = market
         self.submitted: list[dict] = []
         self.order_status: dict[str, str] = {}
+        self.next_submit_status = "FILLED"
 
     # -- 可控点 --
     def set_order_status(self, order_id: str, status: str):
@@ -53,7 +54,12 @@ class ExecutionAdapter(MarketAdapter):
         )
 
     def get_positions(self, account_id=None):
-        return []
+        from dsh_contracts import Position
+        return [Position(
+            market=self.market, account_id="crypto-paper-1",
+            symbol="BTCUSDT", quantity="0.01", available_quantity="0.01",
+            avg_cost="100", currency="USDT", as_of=datetime.now(UTC),
+        )]
 
     def get_account_summary(self):
         return [AccountSummary(
@@ -92,7 +98,7 @@ class ExecutionAdapter(MarketAdapter):
         payload = intent if isinstance(intent, dict) else intent.model_dump(mode="json")
         self.submitted.append(payload)
         order_id = f"{self.market.value}-ord-{len(self.submitted)}"
-        self.order_status[order_id] = "FILLED"
+        self.order_status[order_id] = self.next_submit_status
         return order_id
 
     def get_order_status(self, order_id):
@@ -163,7 +169,7 @@ def test_approved_executes_exactly_once():
     run_once(session, agent)  # 再 tick 不重复
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1
-    assert len(session.tasks.find_by_status("FILLED")) == 1
+    assert len(session.tasks.find_by_status("RECONCILED")) == 1
 
 
 # ---- 2. 拒绝和审批超时不执行 ----
@@ -239,7 +245,7 @@ def test_duplicate_processing_yields_single_order():
     _drive_to_approved(session, agent)
     run_once(session, agent)  # 正常执行一次
     assert len(ADAPTER.submitted) == 1
-    order_id = session.tasks.find_by_status("FILLED")[0]["order_id"]
+    order_id = session.tasks.find_by_status("RECONCILED")[0]["order_id"]
 
     # 模拟重复消息：把任务拨回待审批执行态，再 tick
     from dsh_runtime.store import _get
@@ -251,7 +257,7 @@ def test_duplicate_processing_yields_single_order():
     conn.commit()
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1  # 幂等认领，没有第二笔
-    adopted = session.tasks.find_by_status("FILLED")
+    adopted = session.tasks.find_by_status("RECONCILED")
     assert adopted[0]["order_id"] == order_id
 
 
@@ -279,10 +285,10 @@ def test_crash_after_submit_recovers_without_resubmission():
         " WHERE task_id LIKE '%sig-x'"
     )
     conn.commit()
-    # 重启后第一个 tick：409 → 认领既有订单 → 查询恢复 → FILLED
+    # 重启后第一个 tick：409 → 认领既有订单 → 查询恢复 → 对账完成
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1  # 没有重复下单
-    assert len(session.tasks.find_by_status("FILLED")) == 1
+    assert len(session.tasks.find_by_status("RECONCILED")) == 1
 
 
 # ---- 6. 部分成交、撤单、拒单、未知状态对账 ----
@@ -296,19 +302,14 @@ def test_crash_after_submit_recovers_without_resubmission():
 def test_order_lifecycle_reconciliation(venue_status, final_state):
     agent, session = _agent_and_session()
     _drive_to_approved(session, agent)
-    ADAPTER.order_status.clear()
-    run_once(session, agent)  # 提交
-    task = session.tasks.find_by_status("SUBMITTED", "FILLED")[0]
-    ADAPTER.set_order_status(task["order_id"], venue_status)
-    conn = _get_conn_helper()
-    conn.execute(
-        "UPDATE bot_tasks SET status = 'SUBMITTED' WHERE task_id = ?",
-        (task["task_id"],),
-    )
-    conn.commit()
-    run_once(session, agent)  # 对账 tick
+    ADAPTER.next_submit_status = venue_status  # 提交后 venue 立即返回该状态
+    run_once(session, agent)  # 提交 + 首轮对账
     assert len(session.tasks.find_by_status(final_state)) == 1
     assert len(ADAPTER.submitted) == 1  # 任何状态都不重新提交
+    # 再 tick 一轮：状态不回退、不重复提交
+    run_once(session, agent)
+    assert len(ADAPTER.submitted) == 1
+    assert len(session.tasks.find_by_status(final_state)) == 1
 
 
 def _get_conn_helper():

@@ -32,11 +32,12 @@ class BotSession:
 
     @classmethod
     def for_profile(cls, profile: Profile) -> "BotSession":
+        events = EventLog()
         return cls(
             profile=profile,
             memory=Memory(bot=profile.name),
-            events=EventLog(),
-            tasks=TaskStore(bot=profile.name),
+            events=events,
+            tasks=TaskStore(bot=profile.name, events=events),
         )
 
     def use(self, tool: str) -> None:

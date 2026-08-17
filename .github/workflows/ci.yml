@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -44,5 +43,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Lint
         run: pnpm -r lint
+      - name: Lint
+        run: pnpm --filter @dsh-bot/client-sdk lint
       - name: Build
-        run: pnpm --filter dsh-bot-web build
+        run: |
+          pnpm --filter @dsh-bot/client-sdk build
+          pnpm --filter dsh-bot-web build

@@ -3,9 +3,19 @@
   "$id": "https://dsh-bot.local/schemas/envelope.json",
   "title": "DomainEventEnvelope",
   "type": "object",
-  "required": ["event_id", "event_type", "occurred_at", "market", "actor", "payload"],
+  "required": [
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "market",
+    "actor",
+    "payload"
+  ],
   "properties": {
-    "event_id": { "type": "string", "format": "uuid" },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
     "event_type": {
       "type": "string",
       "enum": [
@@ -34,23 +44,63 @@
         "strategy/rolled_back",
         "incident/opened",
         "incident/mitigated",
-        "incident/resolved"
+        "incident/resolved",
+        "bot/tick.started",
+        "bot/tick.finished",
+        "bot/tick.failed",
+        "bot/task.created",
+        "bot/task.transitioned",
+        "market/chief.summary",
+        "order/partially_filled",
+        "order/rejected"
       ]
     },
-    "occurred_at": { "type": "string", "format": "date-time" },
-    "market": { "type": "string", "enum": ["A_SHARE", "CRYPTO", "GLOBAL"] },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO",
+        "GLOBAL"
+      ]
+    },
     "actor": {
       "type": "object",
-      "required": ["kind", "id"],
+      "required": [
+        "kind",
+        "id"
+      ],
       "properties": {
-        "kind": { "type": "string", "enum": ["user", "bot", "system"] },
-        "id": { "type": "string" }
+        "kind": {
+          "type": "string",
+          "enum": [
+            "user",
+            "bot",
+            "system"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
       }
     },
-    "strategy_version": { "type": "string" },
-    "data_version": { "type": "string" },
-    "permission_context": { "type": "string" },
-    "correlation_id": { "type": "string" },
-    "payload": { "type": "object" }
+    "strategy_version": {
+      "type": "string"
+    },
+    "data_version": {
+      "type": "string"
+    },
+    "permission_context": {
+      "type": "string"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    }
   }
 }

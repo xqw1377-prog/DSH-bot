@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/order/rejected.json",
+  "title": "OrderRejected",
+  "type": "object",
+  "required": [
+    "order_id",
+    "market",
+    "rejected_at"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "rejected_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

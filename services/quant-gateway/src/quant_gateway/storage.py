@@ -27,45 +27,51 @@ _lock = threading.RLock()
 _path: str | None = None
 
 
+
+
+_conn: sqlite3.Connection | None = None
+_lock = threading.RLock()
+
+
 def _db_path() -> str:
     return os.environ.get("QUANT_GATEWAY_DB", ":memory:")
 
 
-def _connect() -> sqlite3.Connection:
-    """每请求可取独立连接；:memory: 必须共享同一连接否则丢表。"""
-    global _path
-    path = _db_path()
-    if path == ":memory:":
-        # 内存库：模块级单连接（测试）
-        if not hasattr(_connect, "_mem"):
-            conn = sqlite3.connect(":memory:", check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            init_schema(conn)
-            _connect._mem = conn  # type: ignore[attr-defined]
-        return _connect._mem  # type: ignore[attr-defined]
-    if _path != path:
-        _path = path
-    conn = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+def _new_conn(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, timeout=10.0, check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout=10000")
+    if path != ":memory:":
+        conn.execute("PRAGMA journal_mode=WAL")
     init_schema(conn)
     return conn
 
 
+def get_conn() -> sqlite3.Connection:
+    """仅用于 :memory: 模式的共享连接；文件模式请使用 locked_conn。"""
+    global _conn
+    if _conn is None:
+        _conn = _new_conn(_db_path())
+    return _conn
+
+
 @contextmanager
 def locked_conn():
-    with _lock:
-        conn = _connect()
-        try:
-            yield conn
-        finally:
-            if _db_path() != ":memory:":
-                conn.close()
+    """一次操作一个连接。
 
-
-def get_conn() -> sqlite3.Connection:
-    """兼容旧调用：返回可用连接（内存模式为共享连接）。"""
-    return _connect()
+    - 文件模式：独立新连接 + WAL + busy_timeout，多 worker / 多进程安全，
+      写冲突由 SQLite 锁与唯一约束仲裁
+    - :memory: 模式：共享连接 + 进程内全局锁（仅限单进程测试）
+    """
+    path = _db_path()
+    if path == ":memory:":
+        with _lock:
+            yield get_conn()
+        return
+    conn = _new_conn(path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
@@ -100,6 +106,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_audit_occurred_at
             ON audit_log (occurred_at);
+        CREATE TABLE IF NOT EXISTS risk_snapshots (
+            risk_snapshot_id TEXT PRIMARY KEY,
+            market           TEXT NOT NULL,
+            payload          TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS paper_orders (
             order_id  TEXT PRIMARY KEY,
             market    TEXT NOT NULL,
@@ -126,6 +137,30 @@ def init_schema(conn: sqlite3.Connection) -> None:
             "NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
         )
     conn.commit()
+
+
+def save_risk_snapshot(snapshot_id: str, market: str, payload: dict) -> None:
+    import json
+
+    with locked_conn() as conn:
+        conn.execute(
+            """INSERT INTO risk_snapshots (risk_snapshot_id, market, payload)
+               VALUES (?, ?, ?)
+               ON CONFLICT(risk_snapshot_id) DO UPDATE SET payload = excluded.payload""",
+            (snapshot_id, market, json.dumps(payload, ensure_ascii=False)),
+        )
+        conn.commit()
+
+
+def get_risk_snapshot(snapshot_id: str) -> dict | None:
+    import json
+
+    with locked_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM risk_snapshots WHERE risk_snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+    return json.loads(row[0]) if row else None
 
 
 def save_paper_order(order_id: str, market: str, payload: dict) -> None:
@@ -167,16 +202,12 @@ def find_paper_order_by_idempotency_key(key: str) -> dict | None:
 
 
 def reset() -> None:
-    """测试辅助：丢弃当前连接，恢复干净状态。"""
-    global _path
+    """测试辅助：丢弃内存连接，恢复干净状态。"""
+    global _conn
     with _lock:
-        if hasattr(_connect, "_mem"):
-            try:
-                _connect._mem.close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            delattr(_connect, "_mem")
-        _path = None
+        if _conn is not None:
+            _conn.close()
+            _conn = None
 
 
 def record_idempotency_key(key: str, request_hash: str) -> bool:
