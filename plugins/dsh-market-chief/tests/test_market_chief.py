@@ -203,3 +203,29 @@ def test_health_check_failure_is_fail_closed():
     # A 股仍应正常汇总
     summaries = session.memory.recent(kind="market-summary")
     assert "A_SHARE" in summaries[0]["content"]
+
+
+def test_chief_is_strictly_read_only():
+    """只读验收：Market Chief 不产生任何订单/审批/资金动作，只有查询与汇总。"""
+    agent, session = _agent_and_session()
+    approvals_before = len(client.get("/v1/approvals").json())
+    audit_before = len(client.get("/v1/audit").json())
+
+    for _ in range(3):
+        run_once(session, agent)
+
+    # 没有创建任何审批
+    assert len(client.get("/v1/approvals").json()) == approvals_before
+    # 网关审计没有新增任何资金动作（无下单/撤单/控制）
+    audit_now = client.get("/v1/audit").json()
+    assert len(audit_now) == audit_before
+    forbidden = {"order.submitted", "order.cancelled", "strategy.paused",
+                 "strategy.resumed", "emergency.stop", "approval.approved",
+                 "approval.rejected"}
+    assert not forbidden & {e["action"] for e in audit_now}
+    # 事件只有汇总与调度，没有订单事件
+    order_events = [e for e in session.events.query(limit=100)
+                    if e["event_type"].startswith("order/")]
+    assert order_events == []
+    # 汇总记忆持续产出
+    assert len(session.memory.recent(kind="market-summary")) >= 1

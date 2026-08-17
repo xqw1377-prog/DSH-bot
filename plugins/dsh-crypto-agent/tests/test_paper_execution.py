@@ -41,6 +41,7 @@ class ExecutionAdapter(MarketAdapter):
         self.submitted: list[dict] = []
         self.order_status: dict[str, str] = {}
         self.next_submit_status = "FILLED"
+        self.risk_scale = Decimal("1")
 
     # -- 可控点 --
     def set_order_status(self, order_id: str, status: str):
@@ -80,7 +81,7 @@ class ExecutionAdapter(MarketAdapter):
 
     def preview_order(self, intent):
         qty = Decimal(str(intent["quantity"])) if isinstance(intent, dict) else intent.quantity
-        notional = qty * Decimal("100")
+        notional = qty * Decimal("100") * self.risk_scale
         return OrderPreview(
             intent=intent, estimated_cost=notional,
             estimated_slippage=Decimal("0.0005"),
@@ -169,7 +170,7 @@ def test_approved_executes_exactly_once():
     run_once(session, agent)  # 再 tick 不重复
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1
-    assert len(session.tasks.find_by_status("RECONCILED")) == 1
+    assert len(session.tasks.find_by_status("DONE")) == 1
 
 
 # ---- 2. 拒绝和审批超时不执行 ----
@@ -207,9 +208,41 @@ def test_expired_approval_never_executes():
             (json.dumps(approval), task["approval_id"]),
         )
         conn.commit()
+    # 本地任务记录的审批创建时间同样老化 → 404 时可确认过期
+    from dsh_runtime.store import _get
+    payload = dict(task["payload"])
+    payload["approval_requested_at"] = (
+        datetime.now(UTC) - timedelta(minutes=31)
+    ).isoformat()
+    conn2 = _get()
+    conn2.execute(
+        "UPDATE bot_tasks SET payload = ? WHERE task_id = ?",
+        (json.dumps(payload), task["task_id"]),
+    )
+    conn2.commit()
     run_once(session, agent)
     assert ADAPTER.submitted == []
     assert len(session.tasks.find_by_status("EXPIRED")) == 1
+
+
+def test_approval_404_unconfirmed_goes_unknown_with_incident():
+    """404 但本地无法确认过期（账本异常/错误ID/权限）→ APPROVAL_UNKNOWN + 事故。"""
+    agent, session = _agent_and_session()
+    run_once(session, agent)
+    task = session.tasks.find_by_status("AWAITING_APPROVAL")[0]
+    # 直接从网关账本删除审批（不老化本地时间）
+    from quant_gateway import storage
+    with storage.locked_conn() as conn:
+        conn.execute(
+            "DELETE FROM approvals WHERE approval_id = ?", (task["approval_id"],)
+        )
+        conn.commit()
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("APPROVAL_UNKNOWN")) == 1
+    incidents = session.events.query("incident/opened")
+    assert any("approval 404" in (i["payload"].get("reason") or "")
+               for i in incidents)
 
 
 # ---- 3. 过期信号即使已批准也不执行 ----
@@ -245,7 +278,7 @@ def test_duplicate_processing_yields_single_order():
     _drive_to_approved(session, agent)
     run_once(session, agent)  # 正常执行一次
     assert len(ADAPTER.submitted) == 1
-    order_id = session.tasks.find_by_status("RECONCILED")[0]["order_id"]
+    order_id = session.tasks.find_by_status("DONE")[0]["order_id"]
 
     # 模拟重复消息：把任务拨回待审批执行态，再 tick
     from dsh_runtime.store import _get
@@ -257,7 +290,7 @@ def test_duplicate_processing_yields_single_order():
     conn.commit()
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1  # 幂等认领，没有第二笔
-    adopted = session.tasks.find_by_status("RECONCILED")
+    adopted = session.tasks.find_by_status("DONE")
     assert adopted[0]["order_id"] == order_id
 
 
@@ -288,7 +321,7 @@ def test_crash_after_submit_recovers_without_resubmission():
     # 重启后第一个 tick：409 → 认领既有订单 → 查询恢复 → 对账完成
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1  # 没有重复下单
-    assert len(session.tasks.find_by_status("RECONCILED")) == 1
+    assert len(session.tasks.find_by_status("DONE")) == 1
 
 
 # ---- 6. 部分成交、撤单、拒单、未知状态对账 ----
@@ -342,13 +375,33 @@ def test_tampered_approval_fails_closed():
     assert len(session.tasks.find_by_status("FAILED")) == 1
 
 
-def test_risk_snapshot_change_fails_closed():
+def test_risk_exceeding_approved_boundary_fails_closed():
     agent, session = _agent_and_session()
     task, _ = _drive_to_approved(session, agent)
-    # 篡改任务记录的风险数字 → 与重新预览的结果不一致
+    # 行情变化使重新计算的风险超过审批边界 → 拦截
+    ADAPTER.risk_scale = Decimal("2")
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("FAILED")) == 1
+
+
+def test_risk_getting_safer_still_executes():
+    """风险变得比审批时更安全（更小）→ 允许继续执行。"""
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    ADAPTER.risk_scale = Decimal("0.5")
+    run_once(session, agent)
+    assert len(ADAPTER.submitted) == 1
+    assert len(session.tasks.find_by_status("DONE")) == 1
+
+
+def test_boundary_tamper_fails_closed():
+    agent, session = _agent_and_session()
+    task, _ = _drive_to_approved(session, agent)
+    # 篡改任务内的审批边界（缩到不可能小）→ 与重新计算不一致即拦截
     from dsh_runtime.store import _get
     payload = dict(task["payload"])
-    payload["worst_case_loss"] = "0.0000001"
+    payload["risk_boundary"]["max_worst_case_loss"] = "0.0000001"
     conn = _get()
     conn.execute(
         "UPDATE bot_tasks SET payload = ? WHERE task_id = ?",

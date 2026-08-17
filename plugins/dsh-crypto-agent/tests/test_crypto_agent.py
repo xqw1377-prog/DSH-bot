@@ -216,7 +216,7 @@ def test_approved_signal_submits_paper_order(monkeypatch):
     assert len(filled) == 1
     assert filled[0]["payload"]["order_id"] == submitted[0]["payload"]["order_id"]
 
-    tasks = session.tasks.find_by_status("RECONCILED")
+    tasks = session.tasks.find_by_status("DONE")
     assert len(tasks) == 1
     assert tasks[0]["order_id"].startswith("CRYPTO-ord-")
 
@@ -267,4 +267,4 @@ def test_task_state_survives_runtime_restart(monkeypatch, tmp_path):
     _approve(approval_id)
     agent2, _ = _agent_and_session()
     run_once(session2, agent2)  # 重启后第一个 tick 完成提交
-    assert len(session2.tasks.find_by_status("RECONCILED")) == 1
+    assert len(session2.tasks.find_by_status("DONE")) == 1
