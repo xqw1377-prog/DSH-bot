@@ -1,24 +1,84 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dsh-bot.local/schemas/account/reconciled.json",
+  "$id": "https://dsh-bot.local/schemas/account/reconciled.json.json",
   "title": "AccountReconciled",
   "type": "object",
-  "required": ["order_id", "task_id", "reconciliation_status"],
+  "required": [
+    "order_id",
+    "reconciliation_status",
+    "reconciled_at"
+  ],
   "properties": {
-    "order_id": { "type": "string" },
-    "task_id": { "type": "string" },
-    "reconciliation_status": { "type": "string" },
-    "symbol": { "type": "string" },
-    "filled_quantity": { "type": "string" },
-    "expected_quantity": { "type": "string" },
-    "avg_price": { "type": "string" },
-    "fees": { "type": "string" },
-    "cash": { "type": ["string", "null"] },
-    "equity": { "type": ["string", "null"] },
-    "positions_quantity": { "type": ["string", "null"] },
-    "available_quantity": { "type": ["string", "null"] },
-    "frozen_quantity": { "type": ["string", "null"] },
-    "reconciliation_version": { "type": ["string", "null"] },
-    "reconciled_at": { "type": "string" }
-  }
+    "order_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "execution_status": {
+      "type": "string"
+    },
+    "reconciliation_status": {
+      "type": "string",
+      "enum": [
+        "PENDING",
+        "MATCHED",
+        "MISMATCH",
+        "FAILED"
+      ]
+    },
+    "symbol": {
+      "type": "string"
+    },
+    "quantity": {
+      "type": "string"
+    },
+    "filled_quantity": {
+      "type": "string"
+    },
+    "avg_price": {
+      "type": "string"
+    },
+    "fees": {
+      "type": "string"
+    },
+    "positions_quantity": {
+      "type": "string"
+    },
+    "available_quantity": {
+      "type": "string"
+    },
+    "frozen_quantity": {
+      "type": "string"
+    },
+    "cash": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "equity": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reconciliation_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reconciled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "venue_as_of": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
 }

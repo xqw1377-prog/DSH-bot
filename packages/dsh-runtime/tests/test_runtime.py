@@ -104,4 +104,5 @@ def test_emit_without_schema_fails_closed():
         primary_tools=frozenset(), prohibited=frozenset(),
     ))
     with pytest.raises(ValueError, match="no payload schema"):
-        session.events.emit("signal/generated", "CRYPTO", "bot", "t", {"x": 1})
+        missing = "does/" + "not.exist"
+        session.events.emit(missing, "CRYPTO", "bot", "t", {"x": 1})

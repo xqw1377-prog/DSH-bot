@@ -1,14 +1,54 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dsh-bot.local/schemas/incident/opened.json",
+  "$id": "https://dsh-bot.local/schemas/incident/opened.json.json",
   "title": "IncidentOpened",
   "type": "object",
-  "required": ["reason"],
-  "additionalProperties": true,
+  "required": [
+    "reason"
+  ],
   "properties": {
-    "reason": { "type": "string" },
-    "task_id": { "type": "string" },
-    "order_id": { "type": "string" },
-    "approval_id": { "type": "string" }
-  }
+    "reason": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "order_id": {
+      "type": "string"
+    },
+    "approval_id": {
+      "type": "string"
+    },
+    "markets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknown_since": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "locally_expired": {
+      "type": "boolean"
+    },
+    "creation_audited": {
+      "type": "boolean"
+    },
+    "risk_snapshot_id": {
+      "type": "string"
+    },
+    "candidate_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
 }

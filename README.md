@@ -2,6 +2,10 @@
 
 基于 DeepSeek Harness 的持续进化量化 Agent 平台。
 
+> **当前版本定位（paper-closeout）**：`execution_mode = paper`
+> —— 单机、多 worker、Paper 执行闭环。可用于 Paper 全流程验证，
+> **不是实盘生产就绪版本**。`live` 模式启动失败。
+
 DSH Bot 是量化系统上方的智能控制面：让用户以自然语言管理研究、信号、策略、风险、审批、异常和策略进化，同时保留确定性量化系统对资金和订单的最终控制。
 
 ## 架构原则
@@ -28,12 +32,15 @@ plugins/
   dsh-risk-auditor/     # 独立风控验证 HTTP
   dsh-quant-gateway/    # Gateway 客户端
   dsh-trade-approval/   # 交易审批
-  # 未审计：dsh-strategy-lab / dsh-incident-center 不进本分支 CI
+  dsh-trade-core/       # 市场策略注入（时段/整手等）
+  # 未审计插件不进 CI：dsh-strategy-lab
 services/
   quant-gateway/        # 统一协议、身份、授权、幂等、二次硬风控（FastAPI）
   strategy-evolution/   # 实验账本、验证门禁、策略晋级状态机（FastAPI）
   risk-policy/          # 全局风险预算与策略（FastAPI）
   projection-api/       # 面向前端的只读投影（FastAPI）
+  incident-center/      # 事故中心（指纹/消息幂等）
+  risk-auditor/         # 独立风控验证服务
 packages/
   domain-contracts/     # 领域对象 Pydantic 模型（订单意图、信号、审批等）
   event-schemas/        # 领域事件 JSON Schema（语言中立）
@@ -114,7 +121,7 @@ python scripts/run_crypto_bot.py --every 60
 提交 → 成交 → 严格对账（`FILLED + MATCHED → DONE`）。对账失败或 UNKNOWN 超时进 INCIDENT。
 Shadow：`python scripts/run_crypto_bot.py --mode shadow`（不下单）。
 A 股 Paper：`python scripts/run_a_stock_bot.py --once`。
-也可用 `python scripts/run_dsh.py` 同时跑 Market Chief + Crypto。
+也可用 `python scripts/run_dsh.py` 同时跑 Market Chief + Crypto；`--with-astock` 追加 A 股。
 
 审批与紧急停止走 Next BFF（`QUANT_GATEWAY_URL` + `QUANT_GATEWAY_API_KEY`），浏览器不持 Gateway Key。
 Chief Chat 只读解释任务/对账/事故，不能批准或下单。

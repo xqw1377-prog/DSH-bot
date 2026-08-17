@@ -26,7 +26,7 @@ if [[ -f .venv/bin/activate ]]; then
 fi
 
 # 优先用仓库源码，避免 editable 安装漂移
-export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/services/quant-gateway/src:$ROOT/services/strategy-evolution/src:$ROOT/services/risk-policy/src:$ROOT/services/projection-api/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-a-stock-agent/src:$ROOT/plugins/dsh-risk-auditor/src:$ROOT/plugins/dsh-market-chief/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/services/quant-gateway/src:$ROOT/services/strategy-evolution/src:$ROOT/services/risk-policy/src:$ROOT/services/projection-api/src:$ROOT/services/incident-center/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-a-stock-agent/src:$ROOT/plugins/dsh-risk-auditor/src:$ROOT/plugins/dsh-market-chief/src${PYTHONPATH:+:$PYTHONPATH}"
 
 export DSH_ENV="${DSH_ENV:-development}"
 export DSH_LOCAL_PAPER="${DSH_LOCAL_PAPER:-1}"

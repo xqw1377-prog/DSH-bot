@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/candidate/validated.json.json",
+  "title": "CandidateValidated",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "evidence_hash"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "evidence_hash": {
+      "type": "string"
+    },
+    "validator": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

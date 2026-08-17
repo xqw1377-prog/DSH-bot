@@ -46,6 +46,10 @@
       "items": {
         "type": "string"
       }
+    },
+    "task_id": {
+      "type": "string"
     }
-  }
+  },
+  "additionalProperties": false
 }

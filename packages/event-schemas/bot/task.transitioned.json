@@ -22,5 +22,6 @@
     "bot": {
       "type": "string"
     }
-  }
+  },
+  "additionalProperties": false
 }

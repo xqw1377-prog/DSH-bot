@@ -74,6 +74,15 @@ services:
     networks:
       - dsh
 
+  incident-center:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/incident-center.Dockerfile
+    ports:
+      - "8006:8006"
+    networks:
+      - dsh
+
   dsh-bot-web:
     build:
       context: ../..

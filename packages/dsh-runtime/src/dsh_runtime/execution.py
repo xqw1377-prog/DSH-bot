@@ -637,7 +637,12 @@ class TradeExecutionCore:
                 task["task_id"], "INCIDENT", reconciliation_status="MISMATCH"
             )
             session.events.emit(
-                "account/mismatch", self.market.value, "bot", self.name, reconciliation
+                "account/mismatch", self.market.value, "bot", self.name,
+                {k: reconciliation[k] for k in (
+                    "order_id", "task_id", "expected_quantity",
+                    "positions_quantity", "detail", "execution_status",
+                    "reconciliation_status", "numeric_problems", "reason",
+                ) if k in reconciliation},
             )
             session.events.emit(
                 "incident/opened", self.market.value, "bot", self.name,
@@ -654,7 +659,15 @@ class TradeExecutionCore:
             return
         reconciliation["reconciliation_status"] = "MATCHED"
         session.events.emit(
-            "account/reconciled", self.market.value, "bot", self.name, reconciliation,
+            "account/reconciled", self.market.value, "bot", self.name,
+            {k: reconciliation[k] for k in (
+                "order_id", "task_id", "execution_status",
+                "reconciliation_status", "symbol", "quantity",
+                "filled_quantity", "avg_price", "fees",
+                "positions_quantity", "available_quantity",
+                "frozen_quantity", "cash", "equity",
+                "reconciliation_version", "reconciled_at", "venue_as_of",
+            ) if k in reconciliation},
         )
         session.tasks.transition(
             task["task_id"], "DONE", reconciliation_status="MATCHED"
@@ -670,7 +683,7 @@ class TradeExecutionCore:
         if not health.get("system_ok") or not health.get("data_fresh"):
             session.events.emit(
                 "incident/opened", self.market.value, "bot", self.name,
-                {"reason": "market data degraded", "health": health},
+                {"reason": "market data degraded"},
             )
             session.memory.remember(
                 "交易所/数据状态降级，本 tick 跳过信号处理", kind="incident",

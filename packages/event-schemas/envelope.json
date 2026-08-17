@@ -45,9 +45,6 @@
         "incident/opened",
         "incident/mitigated",
         "incident/resolved",
-        "kill_switch/requested",
-        "kill_switch/succeeded",
-        "kill_switch/failed",
         "bot/tick.started",
         "bot/tick.finished",
         "bot/tick.failed",
@@ -55,7 +52,10 @@
         "bot/task.transitioned",
         "market/chief.summary",
         "order/partially_filled",
-        "order/rejected"
+        "order/rejected",
+        "kill_switch/requested",
+        "kill_switch/succeeded",
+        "kill_switch/failed"
       ]
     },
     "occurred_at": {
@@ -104,6 +104,11 @@
     },
     "payload": {
       "type": "object"
+    },
+    "schema_version": {
+      "type": "integer",
+      "default": 1,
+      "description": "事件契约版本，为未来升级预留兼容能力"
     }
   }
 }

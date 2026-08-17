@@ -311,3 +311,35 @@ def test_crash_after_venue_accept_recovers_same_order(risk_pass, monkeypatch):
 
     audit = client.get("/v1/audit").json()
     assert any(e["action"] == "order.submission_recovered" for e in audit)
+
+
+def test_eventual_consistency_adapter_never_auto_releases(client, risk_pass):
+    """弱一致查询的适配器：查无不能断定未接单，禁止自动释放重试。"""
+    from quant_gateway.adapters import get_adapter
+
+    register_risk_snapshot(make_snapshot())
+    body = make_intent(idempotency_key="eventual-key",
+                       approval_id=approved_approval())
+    adapter = get_adapter(Market.A_SHARE)
+    adapter.order_lookup_consistency = "EVENTUAL"
+
+    from quant_gateway import storage as gw_storage
+    import hashlib as _h
+    import json as _json
+    from dsh_contracts import OrderIntent as _OI
+    canonical = _OI.model_validate(body).model_dump(mode="json")
+    real_hash = _h.sha256(_json.dumps(
+        canonical, sort_keys=True).encode()).hexdigest()
+    assert gw_storage.record_idempotency_key("eventual-key", real_hash)
+    with gw_storage.locked_conn() as conn:
+        conn.execute(
+            "UPDATE idempotency_keys SET updated_at = '2020-01-01T00:00:00Z'"
+            " WHERE key = 'eventual-key'"
+        )
+        conn.commit()
+    resp = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert resp.status_code == 409
+    assert "not strongly consistent" in error_body(resp)["message"]
+    assert error_body(resp)["submission_unknown"] is True
+    record = gw_storage.get_idempotency_record("eventual-key")
+    assert record["status"] != "FAILED"

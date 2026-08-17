@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/candidate/nominated.json.json",
+  "title": "CandidateNominated",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "market",
+    "strategy_id",
+    "strategy_version"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "strategy_id": {
+      "type": "string"
+    },
+    "strategy_version": {
+      "type": "string"
+    },
+    "experiment_id": {
+      "type": "string"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/strategy/hypothesis.created.json.json",
+  "title": "HypothesisCreated",
+  "type": "object",
+  "required": [
+    "hypothesis",
+    "created_by_bot"
+  ],
+  "properties": {
+    "hypothesis": {
+      "type": "string"
+    },
+    "created_by_bot": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "experiment_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

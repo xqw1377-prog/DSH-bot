@@ -167,7 +167,20 @@ def request_order(market: Market, intent: dict,
             return {"order_id": recovered_id, "status": "SUBMITTED",
                     "recovered": True}
         if recovered is None:
-            # venue 确认从未接受：释放幂等键，本次请求按新单继续走完整门禁
+            consistency = getattr(adapter, "order_lookup_consistency", "UNSUPPORTED")
+            if consistency != "STRONG":
+                raise structured_error(
+                    409,
+                    error_code="SUBMISSION_UNKNOWN",
+                    phase="SUBMITTING",
+                    retryable=False,
+                    submission_unknown=True,
+                    message=(
+                        "submission unknown: venue lookup is not strongly consistent; "
+                        "resubmission blocked"
+                    ),
+                )
+            # STRONG：venue 确认从未接受，释放幂等键后按新单继续走完整门禁
             storage.mark_idempotency_failed(idempotency_key)
         else:
             # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提

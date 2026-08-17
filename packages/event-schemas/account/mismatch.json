@@ -26,6 +26,22 @@
     },
     "detail": {
       "type": "string"
+    },
+    "execution_status": {
+      "type": "string"
+    },
+    "reconciliation_status": {
+      "type": "string"
+    },
+    "numeric_problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reason": {
+      "type": "string"
     }
-  }
+  },
+  "additionalProperties": false
 }
