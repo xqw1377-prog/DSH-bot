@@ -1,2 +1,2 @@
 export * from "./types.js";
-export { ProjectionClient } from "./projection-client.js";
+export { ApprovalActionsClient, ProjectionClient } from "./projection-client.js";

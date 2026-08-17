@@ -2,11 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { Approval } from "@dsh-bot/client-sdk";
-import { projection } from "@/lib/projection";
-
-// 决定动作不走 projection-api（只读），直接提交 Quant Gateway。
-const GATEWAY_URL =
-  process.env.NEXT_PUBLIC_QUANT_GATEWAY_URL || "http://127.0.0.1:8001";
+import { approvalActions, projection } from "@/lib/projection";
 
 const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   order: "下单",
@@ -15,7 +11,7 @@ const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   control_action: "控制动作",
 };
 
-/** 审批列表与批准/拒绝操作。决定动作直接 POST 到 Quant Gateway（projection-api 只读）。 */
+/** 审批列表与批准/拒绝操作。通过 SDK 提交决定，不裸调网关。 */
 export function ApprovalsPanel() {
   const [approvals, setApprovals] = useState<Approval[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,16 +35,13 @@ export function ApprovalsPanel() {
     setDecidingId(id);
     setError(null);
     try {
-      const res = await fetch(`${GATEWAY_URL}/v1/approvals/${id}/decide`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, decided_by: "human" }),
-      });
-      if (!res.ok) {
-        setError(`决定提交失败：Quant Gateway 返回 ${res.status}。`);
-      }
-    } catch {
-      setError("决定提交失败：无法连接 Quant Gateway（可能未启动）。");
+      await approvalActions.decide(id, decision, "human");
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `决定提交失败：${e.message}（可能 Quant Gateway 未启动）。`
+          : "决定提交失败：无法连接 Quant Gateway。"
+      );
     } finally {
       setDecidingId(null);
       await load();
