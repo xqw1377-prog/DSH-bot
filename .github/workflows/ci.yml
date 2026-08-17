@@ -21,7 +21,12 @@ jobs:
       - name: Schema compatibility check
         run: python scripts/check_schemas.py
       - name: Tests
-        run: pytest services/ plugins/ packages/ -q
+        run: |
+          pytest services/ plugins/ packages/ -q --tb=short -ra || {
+            echo '--- collected tests ---'
+            pytest services/ plugins/ packages/ --collect-only -q | tail -20
+            exit 1
+          }
 
   frontend:
     runs-on: ubuntu-latest
@@ -37,7 +42,10 @@ jobs:
       - name: Lint
         run: pnpm -r lint
       - name: Lint
-        run: pnpm --filter @dsh-bot/client-sdk lint
+        run: |
+          pnpm --version
+          pnpm ls --filter @dsh-bot/client-sdk typescript || true
+          pnpm --filter @dsh-bot/client-sdk lint
       - name: Build
         run: |
           pnpm --filter @dsh-bot/client-sdk build
