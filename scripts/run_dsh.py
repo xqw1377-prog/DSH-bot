@@ -23,27 +23,43 @@ for sub in (
     "plugins/dsh-quant-gateway/src",
     "plugins/dsh-trade-approval/src",
     "plugins/dsh-crypto-agent/src",
+    "plugins/dsh-a-stock-agent/src",
+    "plugins/dsh-trade-core/src",
     "plugins/dsh-market-chief/src",
 ):
     sys.path.insert(0, str(ROOT / sub))
 
+from dsh_a_stock_agent import AStockAgent
 from dsh_crypto_agent import CryptoAgent
 from dsh_gateway_client import GatewayClient
 from dsh_market_chief import MarketChiefAgent
 from dsh_runtime import BotSession, load_profile, run_once
 from dsh_trade_approval import ApprovalWorkflow
+from dsh_trade_core import AStockMarketPolicy
 
 
 def build_agents(gateway_url: str, api_key: str | None, account: str,
-                 min_strength: float = 0.6):
+                 min_strength: float = 0.6, with_astock: bool = False):
     gateway = GatewayClient(base_url=gateway_url)
     approvals = ApprovalWorkflow(gateway_base_url=gateway_url, api_key=api_key)
-    return [
+    agents = [
         (MarketChiefAgent(gateway=gateway), "market-chief"),
         (CryptoAgent(gateway=gateway, approvals=approvals,
                      account_id=account, min_strength=min_strength),
          "crypto-bot"),
     ]
+    if with_astock:
+        agents.append((
+            AStockAgent(
+                gateway=gateway, approvals=approvals,
+                account_id=os.environ.get(
+                    "PAPER_A_SHARE_ACCOUNT_ID", "paper-a-share-001"),
+                min_strength=min_strength,
+                policy=AStockMarketPolicy(),
+            ),
+            "a-stock-bot",
+        ))
+    return agents
 
 
 def main() -> int:
@@ -74,7 +90,7 @@ def main() -> int:
 
     runners = []
     built = build_agents(args.gateway, args.api_key, args.account,
-                         args.min_strength)
+                         args.min_strength, args.with_astock)
     for agent, profile_name in built:
         profile = load_profile(ROOT / "profiles" / profile_name / "profile.yaml")
         runners.append((BotSession.for_profile(profile), agent))
