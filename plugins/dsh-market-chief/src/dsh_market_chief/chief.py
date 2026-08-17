@@ -10,6 +10,9 @@
 Chief 不做具体订单决策——那是专业 Bot 的职责。
 """
 
+import os
+
+import httpx
 from dsh_contracts import Market
 from dsh_gateway_client import GatewayClient, GatewayError
 from dsh_runtime import BotSession
@@ -26,6 +29,53 @@ class MarketChiefAgent:
     def __init__(self, gateway: GatewayClient, approvals=None):
         self.gateway = gateway
         self.approvals = approvals
+
+    # Incident Center 地址（可选）；未配置时 Chief 不转发，只做本地汇总。
+    # 转发失败不阻断 Chief 的只读汇总——事故闭环故障不能放大为主循环故障。
+    @staticmethod
+    def _incident_center_url() -> str:
+        return os.environ.get("INCIDENT_CENTER_URL", "")
+
+    def _forward_open_incidents(self, session: BotSession) -> None:
+        """把 Runtime 账本中未决的 incident/opened 转发到事故中心。
+
+        幂等：Incident Center 按指纹去重，重复转发安全。
+        失败关闭于「转发」本身：记录错误记忆，绝不抛出、绝不影响汇总。
+        """
+        url = self._incident_center_url()
+        if not url:
+            return
+        try:
+            conn = _runtime_conn()
+            rows = conn.execute(
+                "SELECT actor_id, market, payload FROM domain_events"
+                " WHERE event_type = 'incident/opened'"
+                " ORDER BY occurred_at DESC LIMIT 50",
+            ).fetchall()
+        except Exception:
+            return
+        import json as _json
+        for actor_id, market, payload in rows:
+            data = _json.loads(payload)
+            try:
+                httpx.post(
+                    url.rstrip("/") + "/v1/incidents",
+                    json={
+                        "source": actor_id,
+                        "reason": data.get("reason", "unspecified"),
+                        "subject": data.get("order_id")
+                                   or data.get("task_id"),
+                        "market": market if market != "GLOBAL" else None,
+                        "severity": "HIGH" if "order" in (data.get("reason")
+                                                          or "") else "NORMAL",
+                    }, timeout=3.0,
+                )
+            except httpx.HTTPError as exc:
+                session.memory.remember(
+                    f"事故转发失败（{actor_id}）: {exc}；本地汇总不受影响",
+                    kind="error", tags=["incident-forward-failed"],
+                )
+                return  # 中心不可达：本 tick 放弃转发，不重试风暴
 
     def tick(self, session: BotSession) -> None:
         summary = {"markets": {}, "pending_approvals": 0, "degraded": []}
@@ -55,6 +105,9 @@ class MarketChiefAgent:
             summary["pending_approvals"] = len(pending)
         except Exception:
             summary["pending_approvals"] = -1  # 未知，明确标注而非默认 0
+
+        # 确定性事故闭环：转发未决事故到 Incident Center（幂等、失败不阻断）
+        self._forward_open_incidents(session)
 
         # Bot 健康度：跨 Bot 只读 Runtime 账本（同库），不写入任何 Bot 状态
         summary["bots"] = self._bot_health()

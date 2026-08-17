@@ -49,6 +49,24 @@ services:
     networks:
       - dsh
 
+  risk-auditor:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/risk-auditor.Dockerfile
+    ports:
+      - "8005:8005"
+    networks:
+      - dsh
+
+  incident-center:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/incident-center.Dockerfile
+    ports:
+      - "8006:8006"
+    networks:
+      - dsh
+
   dsh-bot-web:
     build:
       context: ../..
