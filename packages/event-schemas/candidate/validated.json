@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/candidate/validated.json",
+  "title": "CandidateValidated",
+  "type": "object",
+  "required": [
+    "candidate_id"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

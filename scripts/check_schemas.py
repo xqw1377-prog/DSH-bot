@@ -32,11 +32,12 @@ def main() -> int:
 
     missing = enum - files
     if missing:
-        print("WARN: event types without payload schema (allowed, add later):")
+        print("ERROR: event types without payload schema (must add schema):")
         for name in sorted(missing):
             print(f"  - {name}")
+        return 1
 
-    print(f"OK: {len(files)} payload schemas consistent with envelope")
+    print(f"OK: {len(files)} payload schemas consistent with envelope ({len(enum)} event types)")
     return 0
 
 

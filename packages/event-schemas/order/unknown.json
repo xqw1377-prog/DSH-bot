@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/order/unknown.json",
+  "title": "OrderUnknown",
+  "type": "object",
+  "required": [
+    "order_id",
+    "market"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

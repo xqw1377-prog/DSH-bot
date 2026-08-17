@@ -17,7 +17,7 @@
     },
     "idempotency_key": {
       "type": "string",
-      "format": "uuid"
+      "description": "幂等键，格式为 <prefix>-<uuid hex>，如 crypto-paper-a1b2c3..."
     },
     "market": {
       "type": "string",

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/strategy/hypothesis.created.json",
+  "title": "StrategyHypothesisCreated",
+  "type": "object",
+  "required": [
+    "experiment_id",
+    "strategy_id",
+    "hypothesis"
+  ],
+  "properties": {
+    "experiment_id": {
+      "type": "string"
+    },
+    "strategy_id": {
+      "type": "string"
+    },
+    "hypothesis": {
+      "type": "string"
+    }
+  }
+}

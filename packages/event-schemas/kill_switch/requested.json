@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/kill_switch/requested.json",
+  "title": "KillSwitchRequested",
+  "type": "object",
+  "required": ["incident_id", "market", "rule_id", "source_event_id"],
+  "properties": {
+    "incident_id": { "type": "string" },
+    "market": { "type": "string", "enum": ["A_SHARE", "CRYPTO", "GLOBAL"] },
+    "rule_id": { "type": "string" },
+    "source_event_id": { "type": "string", "format": "uuid" },
+    "account_id": { "type": ["string", "null"] },
+    "attempt": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

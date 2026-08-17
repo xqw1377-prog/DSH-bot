@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/incident/resolved.json",
+  "title": "IncidentResolved",
+  "type": "object",
+  "required": [
+    "incident_id",
+    "postmortem"
+  ],
+  "properties": {
+    "incident_id": {
+      "type": "string"
+    },
+    "postmortem": {
+      "type": "string"
+    }
+  }
+}

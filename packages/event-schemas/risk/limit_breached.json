@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/risk/limit_breached.json",
+  "title": "RiskLimitBreached",
+  "type": "object",
+  "required": ["severity", "rule_id", "market", "source", "measured", "limit", "occurred_at"],
+  "properties": {
+    "severity": { "type": "string", "enum": ["HIGH", "CRITICAL"] },
+    "rule_id": {
+      "type": "string",
+      "examples": ["MAX_POSITION_RATIO", "MAX_DRAWDOWN", "MAX_LOSS_RATIO_PER_ORDER"]
+    },
+    "market": { "type": "string", "enum": ["A_SHARE", "CRYPTO", "GLOBAL"] },
+    "source": {
+      "type": "string",
+      "enum": ["risk-policy"],
+      "description": "签发方固定为 risk-policy 服务，其它来源不得触发 Kill Switch"
+    },
+    "measured": { "type": "number" },
+    "limit": { "type": "number" },
+    "account_id": { "type": ["string", "null"] },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "occurred_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

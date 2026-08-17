@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/experiment/invalidated.json",
+  "title": "ExperimentInvalidated",
+  "type": "object",
+  "required": [
+    "experiment_id",
+    "reason"
+  ],
+  "properties": {
+    "experiment_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

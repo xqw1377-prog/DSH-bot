@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/bot/tick.finished.json",
+  "title": "BotTickFinished",
+  "type": "object",
+  "required": [],
+  "properties": {},
+  "additionalProperties": false
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/experiment/completed.json",
+  "title": "ExperimentCompleted",
+  "type": "object",
+  "required": [
+    "experiment_id"
+  ],
+  "properties": {
+    "experiment_id": {
+      "type": "string"
+    },
+    "result_ref": {
+      "type": "string"
+    }
+  }
+}

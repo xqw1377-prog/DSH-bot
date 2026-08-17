@@ -13,6 +13,7 @@
         "market/chief.summary",
         "signal/generated",
         "risk/evaluated",
+        "risk/limit_breached",
         "order/intent.created",
         "approval/requested",
         "approval/approved",
@@ -28,6 +29,9 @@
         "account/mismatch",
         "bot/task.created",
         "bot/task.transitioned",
+        "bot/tick.started",
+        "bot/tick.finished",
+        "bot/tick.failed",
         "strategy/hypothesis.created",
         "experiment/started",
         "experiment/completed",
@@ -39,7 +43,10 @@
         "strategy/rolled_back",
         "incident/opened",
         "incident/mitigated",
-        "incident/resolved"
+        "incident/resolved",
+        "kill_switch/requested",
+        "kill_switch/succeeded",
+        "kill_switch/failed"
       ]
     },
     "occurred_at": { "type": "string", "format": "date-time" },

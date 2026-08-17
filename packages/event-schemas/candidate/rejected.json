@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/candidate/rejected.json",
+  "title": "CandidateRejected",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "reason"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

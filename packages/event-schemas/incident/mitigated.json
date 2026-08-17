@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/incident/mitigated.json",
+  "title": "IncidentMitigated",
+  "type": "object",
+  "required": [
+    "incident_id",
+    "action"
+  ],
+  "properties": {
+    "incident_id": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "emergency_stop_executed",
+        "manual_intervention"
+      ]
+    },
+    "market": {
+      "type": "string"
+    },
+    "requires_manual_resume": {
+      "type": "boolean"
+    }
+  }
+}

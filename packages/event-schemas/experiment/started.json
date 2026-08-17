@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/experiment/started.json",
+  "title": "ExperimentStarted",
+  "type": "object",
+  "required": [
+    "experiment_id",
+    "market",
+    "strategy_id"
+  ],
+  "properties": {
+    "experiment_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string"
+    },
+    "strategy_id": {
+      "type": "string"
+    }
+  }
+}

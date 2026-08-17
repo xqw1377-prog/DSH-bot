@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/candidate/nominated.json",
+  "title": "CandidateNominated",
+  "type": "object",
+  "required": [
+    "candidate_id"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "experiment_id": {
+      "type": "string"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

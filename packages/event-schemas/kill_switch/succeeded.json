@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/kill_switch/succeeded.json",
+  "title": "KillSwitchSucceeded",
+  "type": "object",
+  "required": ["incident_id", "market", "attempt"],
+  "properties": {
+    "incident_id": { "type": "string" },
+    "market": { "type": "string", "enum": ["A_SHARE", "CRYPTO", "GLOBAL"] },
+    "account_id": { "type": ["string", "null"] },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "halted": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}
