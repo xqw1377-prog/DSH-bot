@@ -72,6 +72,8 @@ export interface AccountSummary {
   cash: string;
   equity: string;
   margin_used?: string | null;
+  available_cash?: string | null;
+  frozen_cash?: string | null;
   currency: string;
   reconciliation_version: string;
   as_of: string;

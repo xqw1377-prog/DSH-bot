@@ -11,7 +11,7 @@ const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   control_action: "控制动作",
 };
 
-/** 审批列表与批准/拒绝操作。决定动作直接 POST 到 Quant Gateway（projection-api 只读）。 */
+/** 审批列表走投影；决定走 BFF，decided_by 由服务端生成。 */
 export function ApprovalsPanel() {
   const [approvals, setApprovals] = useState<Approval[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +38,7 @@ export function ApprovalsPanel() {
       const res = await fetch(`/api/approvals/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, decided_by: "human" }),
+        body: JSON.stringify({ decision }),
       });
       if (!res.ok) {
         setError(`决定提交失败：BFF 返回 ${res.status}。`);

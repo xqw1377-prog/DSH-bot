@@ -22,6 +22,18 @@ export class ProjectionClient {
     return (await res.json()) as T;
   }
 
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(`projection-api ${path} failed: ${res.status}`);
+    }
+    return (await res.json()) as T;
+  }
+
   getHealth(market: Market): Promise<HealthStatus> {
     return this.get(`/v1/markets/${market}/health`);
   }
@@ -60,6 +72,15 @@ export class ProjectionClient {
     return this.get(`/v1/candidates${query}`);
   }
 
+  getIncidents(limit?: number): Promise<IncidentEvent[]> {
+    const query = limit ? `?limit=${limit}` : "";
+    return this.get(`/v1/incidents${query}`);
+  }
+
+  queryChief(question: string): Promise<ChiefAnswer> {
+    return this.post("/v1/chief/query", { question });
+  }
+
   getBotTasks(bot?: string, status?: string): Promise<BotTask[]> {
     const params = new URLSearchParams();
     if (bot) params.set("bot", bot);
@@ -68,6 +89,21 @@ export class ProjectionClient {
     return this.get(`/v1/bot-tasks${query ? `?${query}` : ""}`);
   }
 }
+
+export type IncidentEvent = {
+  event_id: string;
+  event_type: string;
+  occurred_at: string;
+  market: string;
+  actor: { kind: string; id: string };
+  payload: Record<string, unknown>;
+};
+
+export type ChiefAnswer = {
+  role: string;
+  refused: boolean;
+  text: string;
+};
 
 export type BotTask = {
   task_id: string;

@@ -7,31 +7,45 @@ interface ChatMessage {
   text: string;
 }
 
-/** Chief Chat 对话面板。后端聊天 API 尚未接入：发送后仅展示占位回复。 */
+/** Chief 只读对话：解释/查询投影数据，不批准、不风控、不下单。 */
 export function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "bot",
-      text: "你好，我是 Market Chief。后端聊天 API 尚未接入，当前回复为占位内容。",
+      text: "你好，我是 Market Chief。我只能解释任务、对账和事故，不能批准、下单或操作 Kill Switch。",
     },
   ]);
   const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
-    if (!text) return;
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", text },
-      {
-        role: "bot",
-        text: "（占位回复）后端聊天 API 尚未接入，无法处理该消息。接入后将由 Market Chief 生成真实回复。",
-      },
-    ]);
+    if (!text || busy) return;
     setInput("");
-    inputRef.current?.focus();
+    setBusy(true);
+    setMessages((prev) => [...prev, { role: "user", text }]);
+    try {
+      const res = await fetch("/api/chief/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: text }),
+      });
+      const data = (await res.json()) as { text?: string };
+      setMessages((prev) => [
+        ...prev,
+        { role: "bot", text: data.text || `查询失败（${res.status}）。` },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "bot", text: "无法连接 Chief 查询接口。" },
+      ]);
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
   }
 
   return (
@@ -75,7 +89,7 @@ export function ChatPanel() {
         ))}
       </div>
       <form
-        onSubmit={handleSubmit}
+        onSubmit={(e) => void handleSubmit(e)}
         style={{
           display: "flex",
           gap: 8,
@@ -87,11 +101,12 @@ export function ChatPanel() {
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="输入消息…"
+          placeholder="询问任务、对账或事故…"
           style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid #d1d5db" }}
         />
         <button
           type="submit"
+          disabled={busy}
           style={{
             padding: "8px 16px",
             borderRadius: 6,
