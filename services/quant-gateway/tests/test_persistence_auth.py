@@ -127,3 +127,24 @@ def test_auth_scope_enforced(monkeypatch):
         json={"decision": "APPROVED", "decided_by": "alice"},
         headers={"X-API-Key": "chief-secret"},
     ).status_code == 200
+
+
+def test_decided_by_overwritten_by_principal(monkeypatch):
+    for k, v in AUTH_ENV.items():
+        monkeypatch.setenv(k, v)
+    created = client.post("/v1/approvals", json={
+        "market": "CRYPTO",
+        "requested_by_bot": "crypto-bot",
+        "subject_type": "order",
+        "subject_id": "intent-2",
+    }, headers={"X-API-Key": "chief-secret"}).json()
+    decided = client.post(
+        f"/v1/approvals/{created['approval_id']}/decide",
+        json={"decision": "APPROVED", "decided_by": "forged-human"},
+        headers={"X-API-Key": "chief-secret"},
+    )
+    assert decided.status_code == 200
+    assert decided.json()["decided_by"] == "alice"
+    assert client.get(
+        "/v1/approvals",
+    ).status_code == 401

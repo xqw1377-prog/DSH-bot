@@ -21,8 +21,6 @@ from quant_gateway.routers import orders
 class FakeAdapter(MarketAdapter):
     """代表现有量化系统的内存实现，仅用于测试。"""
 
-    order_lookup_consistency = "STRONG"
-
     def __init__(self, market: Market) -> None:
         self.market = market
         self._ids = count(1)
@@ -35,10 +33,12 @@ class FakeAdapter(MarketAdapter):
     def get_health(self) -> HealthStatus:
         return HealthStatus(
             market=self.market,
-            system_ok=True,
+            system_ok=not self.stopped,
             data_fresh=True,
-            trading_channel_ok=True,
+            trading_channel_ok=not self.stopped,
             clock_skew_ms=0,
+            degraded=self.stopped,
+            detail="emergency stop engaged" if self.stopped else None,
             as_of=datetime.now(UTC),
         )
 
@@ -83,15 +83,22 @@ class FakeAdapter(MarketAdapter):
     def emergency_stop(self, account_id: str | None = None) -> None:
         self.stopped = True
 
+    def resume_trading(self) -> None:
+        self.stopped = False
+
+
+def install_fake_adapters() -> None:
+    _adapters.clear()
+    register_adapter(Market.A_SHARE, FakeAdapter(Market.A_SHARE))
+    register_adapter(Market.CRYPTO, FakeAdapter(Market.CRYPTO))
+
 
 @pytest.fixture(autouse=True)
 def reset_gateway_state():
     """每个测试前重置适配器注册表与内存账本。"""
     from quant_gateway import approval_store
 
-    _adapters.clear()
     approval_store.reset()
-    register_adapter(Market.A_SHARE, FakeAdapter(Market.A_SHARE))
-    register_adapter(Market.CRYPTO, FakeAdapter(Market.CRYPTO))
+    install_fake_adapters()
     yield
     _adapters.clear()

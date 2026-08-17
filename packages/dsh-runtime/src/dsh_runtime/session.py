@@ -50,7 +50,7 @@ def run_once(session: BotSession, agent: Agent) -> None:
     DSH 故障不能影响量化系统，也绝不能带着异常继续下一轮。"""
     session.events.emit(
         "bot/tick.started", session.profile.market, "system", agent.name,
-        {"bot": agent.name}
+        {"bot": agent.name},
     )
     try:
         agent.tick(session)
@@ -65,7 +65,7 @@ def run_once(session: BotSession, agent: Agent) -> None:
     finally:
         session.events.emit(
             "bot/tick.finished", session.profile.market, "system", agent.name,
-            {"bot": agent.name}
+            {"bot": agent.name},
         )
 
 

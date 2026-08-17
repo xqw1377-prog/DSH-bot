@@ -27,6 +27,7 @@ from dsh_contracts import (
 from quant_gateway import storage
 from quant_gateway.adapters.base import MarketAdapter
 from quant_gateway.adapters.registry import register_adapter
+from quant_gateway.errors import structured_error
 
 
 def _now() -> datetime:
@@ -41,9 +42,6 @@ def paper_account_id(market: Market) -> str:
 
 class PaperAdapter(MarketAdapter):
     """代表现有量化系统的本地纸上实现。"""
-
-    # 同步落库 + 稳定幂等键索引：「查无」即可断定从未接受
-    order_lookup_consistency = "STRONG"
 
     def __init__(self, market: Market) -> None:
         self.market = market
@@ -101,6 +99,8 @@ class PaperAdapter(MarketAdapter):
                 cash=self._cash,
                 equity=equity,
                 margin_used=None if self.market == Market.A_SHARE else Decimal("4100"),
+                available_cash=self._cash,
+                frozen_cash=Decimal("0"),
                 currency=self._currency,
                 reconciliation_version="paper-v1",
                 as_of=_now(),
@@ -157,6 +157,15 @@ class PaperAdapter(MarketAdapter):
         )
 
     def request_order(self, intent) -> str:
+        if self.stopped:
+            raise structured_error(
+                409,
+                error_code="TRADING_HALTED",
+                phase="PRE_SUBMIT",
+                retryable=True,
+                submission_unknown=False,
+                message="emergency stop engaged; order rejected",
+            )
         payload = intent if isinstance(intent, dict) else intent.model_dump(mode="json")
         if payload.get("account_id") != self._account_id:
             raise ValueError(
@@ -166,16 +175,46 @@ class PaperAdapter(MarketAdapter):
         order_id = f"{self.market.value}-paper-{next(self._ids)}"
         avg_price = self._price
         filled_at = _now().isoformat()
+        quantity = Decimal(str(payload.get("quantity", "0")))
+        fees = Decimal("0")
+        forced = os.environ.get("PAPER_ORDER_OUTCOME", "FILLED").upper()
+        position_before = self._qty
+        cash_before = self._cash
+        status = forced if forced in {
+            "FILLED", "PARTIALLY_FILLED", "REJECTED", "UNKNOWN", "CANCELLED",
+        } else "FILLED"
+        if status == "FILLED":
+            if payload.get("side") == "BUY":
+                self._qty += quantity
+                self._cash -= quantity * avg_price + fees
+            else:
+                self._qty -= quantity
+                self._cash += quantity * avg_price - fees
+        filled_qty = quantity if status == "FILLED" else (
+            quantity / 2 if status == "PARTIALLY_FILLED" else Decimal("0")
+        )
         record = {
             "order_id": order_id,
-            "status": "FILLED",
+            "status": status,
             "market": self.market.value,
             "symbol": payload.get("symbol"),
             "side": payload.get("side"),
-            "filled_quantity": str(payload.get("quantity")),
+            "filled_quantity": str(filled_qty),
             "avg_price": str(avg_price),
             "filled_at": filled_at,
-            "fees": "0",
+            "fees": str(fees),
+            "taxes": "0",
+            "fills": [
+                {
+                    "quantity": str(filled_qty),
+                    "price": str(avg_price),
+                    "fee": str(fees),
+                }
+            ],
+            "position_before": str(position_before),
+            "cash_before": str(cash_before),
+            "position_after": str(self._qty),
+            "cash_after": str(self._cash),
             "source": "paper",
             "account_id": self._account_id,
             "intent": payload,
@@ -183,18 +222,11 @@ class PaperAdapter(MarketAdapter):
         self.submitted.append(payload)
         self._orders[order_id] = record
         storage.save_paper_order(order_id, self.market.value, record)
-        quantity = Decimal(str(payload.get("quantity", "0")))
-        if payload.get("side") == "BUY":
-            self._qty += quantity
-            self._cash -= quantity * avg_price
-        else:
-            self._qty -= quantity
-            self._cash += quantity * avg_price
         return order_id
 
     def find_order_by_idempotency_key(self, key: str) -> dict | None:
         # Paper 同步落库：按幂等键能查到即已接单；查不到即确定从未接受
-        found = find_paper_order_by_idempotency_key(key)
+        found = storage.find_paper_order_by_idempotency_key(key)
         if found is not None:
             return dict(found)
         return None
@@ -222,6 +254,9 @@ class PaperAdapter(MarketAdapter):
 
     def emergency_stop(self, account_id: str | None = None) -> None:
         self.stopped = True
+
+    def resume_trading(self) -> None:
+        self.stopped = False
 
 
 def register_paper_adapters() -> None:

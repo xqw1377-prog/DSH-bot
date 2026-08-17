@@ -7,6 +7,8 @@ export const dynamic = "force-dynamic";
 const ENTRIES = [
   { href: "/chat", label: "Chief Chat", desc: "与 Market Chief 对话" },
   { href: "/approvals", label: "审批中心", desc: "处理待审批的资金与晋级动作" },
+  { href: "/tasks", label: "任务与对账", desc: "订单任务、MATCHED / INCIDENT" },
+  { href: "/incidents", label: "事故", desc: "对账失败与 Kill Switch" },
   { href: "/portfolio", label: "Portfolio", desc: "持仓与账户摘要" },
   { href: "/strategy-lab", label: "Strategy Lab", desc: "实验与策略晋级状态" },
 ];

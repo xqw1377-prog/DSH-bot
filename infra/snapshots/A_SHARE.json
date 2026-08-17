@@ -1,0 +1,33 @@
+{
+  "health": {
+    "system_ok": true,
+    "data_fresh": true,
+    "trading_channel_ok": false,
+    "clock_skew_ms": 0,
+    "degraded": false,
+    "detail": "exported snapshot; trading channel closed"
+  },
+  "positions": [
+    {
+      "account_id": "paper-a-share-001",
+      "symbol": "600519",
+      "quantity": "120",
+      "available_quantity": "120",
+      "frozen_quantity": "0",
+      "avg_cost": "1680.50",
+      "currency": "CNY"
+    }
+  ],
+  "accounts": [
+    {
+      "account_id": "paper-a-share-001",
+      "cash": "1048340",
+      "equity": "1250000",
+      "available_cash": "1048340",
+      "frozen_cash": "0",
+      "currency": "CNY",
+      "reconciliation_version": "snapshot-v1"
+    }
+  ],
+  "signals": []
+}

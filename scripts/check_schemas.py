@@ -33,7 +33,7 @@ def main() -> int:
     emitted: set[str] = set()
     for d in EMITTER_DIRS:
         for py in d.rglob("*.py"):
-            if "egg-info" in str(py) or ".venv" in str(py):
+            if "egg-info" in str(py) or ".venv" in str(py) or "/tests/" in str(py):
                 continue
             emitted |= set(EMIT_RE.findall(py.read_text()))
 

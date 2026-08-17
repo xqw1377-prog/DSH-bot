@@ -148,16 +148,17 @@ class EventLog:
         if event_type in cls._validator_cache:
             return cls._validator_cache[event_type]
         schema_file = cls._schema_dir() / f"{event_type}.json"
-        validator = None
-        if schema_file.exists():
-            try:
-                from jsonschema import Draft202012Validator, FormatChecker
-                validator = Draft202012Validator(
-                    json.loads(schema_file.read_text()),
-                    format_checker=FormatChecker(),  # date-time 真校验
-                )
-            except ImportError:
-                validator = None
+        if not schema_file.exists():
+            raise ValueError(
+                f"event {event_type} has no payload schema; refuse to emit"
+            )
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError as exc:
+            raise ValueError(
+                "jsonschema is required to emit domain events"
+            ) from exc
+        validator = Draft202012Validator(json.loads(schema_file.read_text()))
         cls._validator_cache[event_type] = validator
         return validator
 

@@ -47,6 +47,8 @@ class AccountSummary(_Contract):
     cash: Decimal
     equity: Decimal
     margin_used: Decimal | None = None
+    available_cash: Decimal | None = None
+    frozen_cash: Decimal | None = None
     currency: str
     reconciliation_version: str
     as_of: datetime

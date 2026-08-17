@@ -13,18 +13,77 @@ from dsh_contracts import Market, OrderIntent
 
 
 class GatewayError(RuntimeError):
-    """网关拒绝或不可达。失败关闭：调用方不得重试资金动作。"""
+    """网关拒绝或不可达。失败关闭：调用方不得按状态码猜测是否已下单。"""
 
-    def __init__(self, status_code: int, detail: str):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        *,
+        error_code: str | None = None,
+        phase: str | None = None,
+        retryable: bool | None = None,
+        submission_unknown: bool | None = None,
+        request_id: str | None = None,
+    ):
         super().__init__(f"gateway {status_code}: {detail}")
         self.status_code = status_code
         self.detail = detail
+        self.error_code = error_code
+        self.phase = phase
+        self.retryable = retryable
+        self.submission_unknown = submission_unknown
+        self.request_id = request_id
+
+
+def raise_for_response(resp: httpx.Response) -> None:
+    if not resp.is_error:
+        return
+    try:
+        payload = resp.json()
+    except Exception:
+        raise GatewayError(resp.status_code, resp.text) from None
+    detail = payload.get("detail", payload)
+    if isinstance(detail, dict) and "phase" in detail:
+        message = str(detail.get("message") or detail.get("error_code") or resp.text)
+        raise GatewayError(
+            resp.status_code,
+            message,
+            error_code=detail.get("error_code"),
+            phase=detail.get("phase"),
+            retryable=detail.get("retryable"),
+            submission_unknown=detail.get("submission_unknown"),
+            request_id=detail.get("request_id"),
+        )
+    if isinstance(detail, str):
+        raise GatewayError(resp.status_code, detail)
+    raise GatewayError(resp.status_code, resp.text)
+
+
+def raise_unreachable(exc: Exception) -> None:
+    """客户端连不上 Gateway：无法确认 venue 是否被调用。"""
+    raise GatewayError(
+        0,
+        str(exc),
+        error_code="GATEWAY_UNREACHABLE",
+        phase=None,
+        retryable=False,
+        submission_unknown=True,
+    ) from exc
 
 
 class GatewayClient:
-    def __init__(self, base_url: str = "http://127.0.0.1:8001", timeout: float = 5.0):
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8001",
+        timeout: float = 5.0,
+        api_key: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        headers = {"X-API-Key": api_key} if api_key else {}
+        self._client = httpx.Client(
+            base_url=self.base_url, timeout=timeout, headers=headers
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -32,9 +91,11 @@ class GatewayClient:
     # ---- 只读 ----
 
     def _get(self, path: str, params: dict | None = None) -> object:
-        resp = self._client.get(path, params=params)
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        try:
+            resp = self._client.get(path, params=params)
+        except httpx.RequestError as exc:
+            raise_unreachable(exc)
+        raise_for_response(resp)
         return resp.json()
 
     def get_health(self, market: Market):
@@ -55,8 +116,7 @@ class GatewayClient:
             f"/v1/markets/{intent.market.value}/orders/preview",
             json=intent.model_dump(mode="json"),
         )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
     def get_order_status(self, market: Market, order_id: str):
@@ -67,8 +127,7 @@ class GatewayClient:
         resp = self._client.post(
             f"/v1/markets/{market.value}/risk-snapshots", json=snapshot
         )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
     # ---- 审批 ----
@@ -89,8 +148,7 @@ class GatewayClient:
             "subject_id": subject_id,
             "evidence_refs": evidence_refs or [],
         })
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
     def list_approvals(self, status: str | None = None, market: Market | None = None):
@@ -109,28 +167,31 @@ class GatewayClient:
             f"/v1/approvals/{approval_id}/decide",
             json={"decision": decision, "decided_by": decided_by},
         )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
     # ---- 资金动作 ----
 
     def request_order(self, intent: OrderIntent) -> dict:
-        """提交订单意图。任何 GatewayError 都不得盲目重试（幂等键除外）。"""
-        resp = self._client.post(
-            f"/v1/markets/{intent.market.value}/orders",
-            json=intent.model_dump(mode="json"),
-        )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        """提交订单意图。按 Gateway 的 phase/submission_unknown 分类，不猜状态码。"""
+        try:
+            resp = self._client.post(
+                f"/v1/markets/{intent.market.value}/orders",
+                json=intent.model_dump(mode="json"),
+            )
+        except httpx.RequestError as exc:
+            raise_unreachable(exc)
+        raise_for_response(resp)
         return resp.json()
 
     def cancel_order(self, market: Market, order_id: str) -> dict:
-        resp = self._client.post(
-            f"/v1/markets/{market.value}/orders/{order_id}/cancel"
-        )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        try:
+            resp = self._client.post(
+                f"/v1/markets/{market.value}/orders/{order_id}/cancel"
+            )
+        except httpx.RequestError as exc:
+            raise_unreachable(exc)
+        raise_for_response(resp)
         return resp.json()
 
     # ---- 控制动作（需更强授权）----
@@ -139,16 +200,14 @@ class GatewayClient:
         resp = self._client.post(
             f"/v1/markets/{market.value}/strategies/{strategy_id}/pause"
         )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
     def resume_strategy(self, market: Market, strategy_id: str) -> dict:
         resp = self._client.post(
             f"/v1/markets/{market.value}/strategies/{strategy_id}/resume"
         )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
     def emergency_stop(self, market: Market, account_id: str | None = None) -> dict:
@@ -157,8 +216,7 @@ class GatewayClient:
         resp = self._client.post(
             f"/v1/markets/{market.value}/emergency-stop", params=params
         )
-        if resp.is_error:
-            raise GatewayError(resp.status_code, resp.text)
+        raise_for_response(resp)
         return resp.json()
 
 

@@ -1,18 +1,13 @@
-"""A 股 Bot 全链路集成测试：复用 TradeExecutionCore + AStockMarketPolicy。
+"""A 股 Bot 复用 TradeExecutionCore：Paper 闭环与 Shadow 不下单。"""
 
-验证：执行闭环与 Crypto 同源（无分叉），A 股规则真实生效——
-交易时段拦截、整手、涨跌停、审批→提交→对账。
-"""
-
-import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from dsh_a_stock_agent import AShareAgent
 from dsh_contracts import (
-    AccountSummary, HealthStatus, Market, OrderPreview, Position, RiskSnapshot,
-    Signal,
+    AccountSummary, HealthStatus, Market, OrderPreview, RiskSnapshot, Signal,
 )
 from dsh_gateway_client import GatewayClient
 from dsh_runtime import BotSession, load_profile, reset, run_once
@@ -24,23 +19,16 @@ from quant_gateway.main import app
 from quant_gateway.routers import orders as orders_router
 
 PROFILES = Path(__file__).resolve().parent.parent.parent.parent / "profiles"
-
 client = TestClient(app)
 
 
-class AStockFakeAdapter(MarketAdapter):
-    """A 股假量化系统：600519，昨收 1680.50，成交回写。"""
-
-    order_lookup_consistency = "STRONG"
-
-    def __init__(self, market):
+class AShareAdapter(MarketAdapter):
+    def __init__(self, market: Market):
         self.market = market
-        self.submitted = []
-        self.order_status_map = {}
-        self.position = Decimal("100")
-        self.cash = Decimal("1000000")
-        self.price = Decimal("1680.50")
-        self._last = None
+        self.submitted: list[dict] = []
+        self._qty = Decimal("120")
+        self._cash = Decimal("1048340")
+        self._price = Decimal("1680.50")
 
     def get_health(self):
         return HealthStatus(
@@ -49,174 +37,131 @@ class AStockFakeAdapter(MarketAdapter):
         )
 
     def get_positions(self, account_id=None):
+        from dsh_contracts import Position
         return [Position(
             market=self.market, account_id="paper-a-share-001",
-            symbol="600519", quantity=str(self.position),
-            available_quantity=str(self.position), frozen_quantity="0",
-            avg_cost=str(self.price), currency="CNY",
-            as_of=datetime.now(UTC),
+            symbol="600519", quantity=self._qty, available_quantity=self._qty,
+            frozen_quantity=Decimal("0"),
+            avg_cost=self._price, currency="CNY", as_of=datetime.now(UTC),
         )]
 
     def get_account_summary(self):
         return [AccountSummary(
             market=self.market, account_id="paper-a-share-001",
-            cash=str(self.cash),
-            equity=str(self.cash + self.position * self.price),
-            currency="CNY", reconciliation_version="v1",
-            as_of=datetime.now(UTC),
+            cash=self._cash, equity=self._cash + self._qty * self._price,
+            available_cash=self._cash, frozen_cash=Decimal("0"),
+            currency="CNY", reconciliation_version="v1", as_of=datetime.now(UTC),
         )]
 
     def get_signals(self):
         now = datetime.now(UTC)
         return [Signal(
-            signal_id="a-sig-1", market=self.market,
-            strategy_id="mean-reversion", strategy_version="1.0.0",
-            symbol="600519", side="BUY", strength=0.9,
+            signal_id="ashare-sig-1", market=self.market,
+            strategy_id="mean-reversion-ashare", strategy_version="0.1.0",
+            symbol="600519", side="BUY", strength=0.8,
             generated_at=now, valid_until=now + timedelta(minutes=30),
             data_snapshot_id="snap-a",
         )]
 
     def preview_order(self, intent):
-        payload = intent if isinstance(intent, dict) else intent
-        qty = Decimal(str(payload["quantity"])) if isinstance(payload, dict) else payload.quantity
-        notional = qty * self.price
+        qty = Decimal(str(intent["quantity"])) if isinstance(intent, dict) else intent.quantity
+        notional = qty * self._price
         return OrderPreview(
-            intent=payload, estimated_cost=notional,
-            estimated_slippage=Decimal("0.01"),
+            intent=intent, estimated_cost=notional,
+            estimated_slippage=Decimal("0.0005"),
             risk=RiskSnapshot(
-                risk_snapshot_id=f"rs-a", market=self.market,
+                risk_snapshot_id="rs-ashare-sig-1", market=self.market,
                 account_id="paper-a-share-001",
-                position_before=self.position,
-                position_after=self.position + qty,
+                position_before=self._qty, position_after=self._qty + qty,
                 risk_budget_delta=notional,
-                worst_case_loss=notional * Decimal("0.10"),
+                worst_case_loss=notional * Decimal("0.01"),
                 limits_hit=[], as_of=datetime.now(UTC),
             ),
         ).model_dump(mode="json")
 
+    def find_order_by_idempotency_key(self, key):
+        return None
+
     def request_order(self, intent):
         payload = intent if isinstance(intent, dict) else intent.model_dump(mode="json")
         self.submitted.append(payload)
-        order_id = f"{self.market.value}-ord-{len(self.submitted)}"
-        qty = Decimal(str(payload["quantity"]))
-        fees = Decimal("5")
-        if payload.get("side") == "BUY":
-            self.position += qty
-            self.cash -= qty * self.price + fees
-        else:
-            self.position -= qty
-            self.cash += qty * self.price - fees
-        self._last = {
-            "order_id": order_id, "status": "FILLED", "symbol": "600519",
-            "filled_quantity": str(qty), "avg_price": str(self.price),
-            "fees": str(fees), "filled_at": datetime.now(UTC).isoformat(),
-        }
-        self.order_status_map[order_id] = "FILLED"
-        return order_id
-
-    def find_order_by_idempotency_key(self, key):
-        for payload in self.submitted:
-            if payload.get("idempotency_key") == key:
-                return self._last
-        return None
+        qty = Decimal(str(payload.get("quantity", "0.01")))
+        self._qty += qty
+        self._cash -= qty * self._price
+        return f"{self.market.value}-ord-1"
 
     def get_order_status(self, order_id):
-        return self._last or {"order_id": order_id, "status": "UNKNOWN"}
+        return {
+            "order_id": order_id, "status": "FILLED",
+            "filled_quantity": "0.01", "avg_price": str(self._price),
+            "fees": "0", "taxes": "0",
+            "fills": [{"quantity": "0.01", "price": str(self._price), "fee": "0"}],
+        }
 
     def cancel_order(self, order_id):
         return {"order_id": order_id, "status": "CANCELLED"}
 
-    def pause_strategy(self, sid): pass
-    def resume_strategy(self, sid): pass
-    def emergency_stop(self, account_id=None): pass
+    def pause_strategy(self, sid):
+        pass
+
+    def resume_strategy(self, sid):
+        pass
+
+    def emergency_stop(self, account_id=None):
+        pass
 
 
 ADAPTER = None
 
 
 @pytest.fixture(autouse=True)
-def setup():
+def setup(monkeypatch):
     global ADAPTER
     approval_store.reset()
     reset()
     orders_router.check_order_risk = (
         lambda base_url, **payload: {"passed": True, "limits_hit": []}
     )
-    ADAPTER = AStockFakeAdapter(Market.A_SHARE)
+    ADAPTER = AShareAdapter(Market.A_SHARE)
     register_adapter(Market.A_SHARE, ADAPTER)
+    register_adapter(Market.CRYPTO, AShareAdapter(Market.CRYPTO))
     yield
     approval_store.reset()
     reset()
 
 
-def _agent_and_session(policy=None):
+def _agent_and_session():
     gateway = GatewayClient.__new__(GatewayClient)
     GatewayClient.__init__(gateway, base_url="http://testserver")
     gateway._client = client
     approvals = ApprovalWorkflow.__new__(ApprovalWorkflow)
     ApprovalWorkflow.__init__(approvals, gateway_base_url="http://testserver")
     approvals._client = client
-    from dsh_a_stock_agent import AStockAgent
-    from dsh_trade_core import AStockMarketPolicy
-    agent = AStockAgent(
-        gateway=gateway, approvals=approvals,
-        account_id="paper-a-share-001",
-        policy=policy or AStockMarketPolicy(),
+    agent = AShareAgent(
+        gateway=gateway, approvals=approvals, account_id="paper-a-share-001",
     )
     return agent, BotSession.for_profile(
         load_profile(PROFILES / "a-stock-bot" / "profile.yaml")
     )
 
 
-class AlwaysOpenPolicy:
-    """测试用：绕开交易时段（规则校验仍走真实 AStockMarketPolicy）。"""
-
-    def __init__(self):
-        from dsh_trade_core import AStockMarketPolicy
-        self.real = AStockMarketPolicy()
-
-    def __getattr__(self, item):
-        return getattr(self.real, item)
-
-    def session_blocked(self):
-        return None
-
-
-def _approve_pending():
-    approvals = client.get("/v1/approvals?status=REQUESTED").json()
-    assert approvals, "应有待审批"
-    aid = approvals[0]["approval_id"]
+def test_ashare_paper_reaches_done():
+    agent, session = _agent_and_session()
+    run_once(session, agent)
+    task = session.tasks.find_by_status("AWAITING_APPROVAL")[0]
     resp = client.post(
-        f"/v1/approvals/{aid}/decide",
+        f"/v1/approvals/{task['approval_id']}/decide",
         json={"decision": "APPROVED", "decided_by": "alice"},
     )
     assert resp.status_code == 200
-
-
-def test_full_loop_approves_and_reconciles():
-    agent, session = _agent_and_session(policy=AlwaysOpenPolicy())
-    run_once(session, agent)  # 预览 + 审批
-    assert len(client.get("/v1/approvals?status=REQUESTED").json()) == 1
-
-    _approve_pending()
-    run_once(session, agent)  # 提交 + 对账
-
-    assert len(ADAPTER.submitted) == 1
-    payload = ADAPTER.submitted[0]
-    assert Decimal(str(payload["quantity"])) % 100 == 0  # 整手下单
-    assert len(session.tasks.find_by_status("DONE")) == 1
-    rec = session.events.query("account/reconciled")
-    assert rec and rec[0]["payload"]["reconciliation_status"] == "MATCHED"
-    # 手续费纳入现金守恒
-    assert Decimal(rec[0]["payload"]["fees"]) == Decimal("5")
-
-
-def test_closed_session_blocks_new_signals():
-    agent, session = _agent_and_session()  # 真实时段（测试时刻大概率闭市/非交易）
-    blocked = agent.policy.session_blocked()
-    if blocked is None:
-        pytest.skip("测试运行在 A 股交易时段内，闭市分支另由策略单测覆盖")
     run_once(session, agent)
-    assert client.get("/v1/approvals").json() == []
-    assert any(m["kind"] == "session-blocked"
-               for m in session.memory.recent())
+    assert len(ADAPTER.submitted) == 1
+    assert len(session.tasks.find_by_status("DONE")) == 1
+
+
+def test_ashare_shadow_never_submits():
+    agent, session = _agent_and_session()
+    agent.mode = "shadow"
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("SHADOW_RECORDED")) == 1

@@ -46,11 +46,15 @@ def _load_dotenv(path: Path) -> None:
 def resolve_account_id(cli_account: str | None) -> str:
     if cli_account:
         return cli_account
-    return (
+    value = (
         os.environ.get("DSH_CRYPTO_ACCOUNT_ID")
         or os.environ.get("PAPER_CRYPTO_ACCOUNT_ID")
-        or "paper-crypto-001"
     )
+    if not value:
+        raise SystemExit(
+            "account validation failed: set DSH_CRYPTO_ACCOUNT_ID or PAPER_CRYPTO_ACCOUNT_ID"
+        )
+    return value
 
 
 def resolve_market() -> Market:
@@ -111,11 +115,22 @@ def main() -> int:
         "--once", action="store_true", help="只跑一个 tick 后退出（冒烟用）"
     )
     parser.add_argument(
+        "--mode",
+        default=os.environ.get("DSH_CRYPTO_MODE", "paper"),
+        choices=("paper", "shadow", "live"),
+        help="paper=模拟成交；shadow=只读决策不下单；live=经 Gateway 实盘",
+    )
+    parser.add_argument(
         "--skip-account-check",
         action="store_true",
         help="跳过启动账户校验（仅测试）",
     )
     args = parser.parse_args()
+    if args.mode == "live":
+        raise SystemExit(
+            "live mode is disabled until a real venue adapter, "
+            "single-writer store, identity, and outbox are complete"
+        )
 
     if args.db:
         os.environ["DSH_RUNTIME_DB"] = args.db
@@ -130,7 +145,7 @@ def main() -> int:
     profile = load_profile(ROOT / "profiles" / "crypto-bot" / "profile.yaml")
     session = BotSession.for_profile(profile)
 
-    gateway = GatewayClient(base_url=args.gateway)
+    gateway = GatewayClient(base_url=args.gateway, api_key=args.api_key)
     if not args.skip_account_check:
         validate_account(gateway, account_id, market)
 
@@ -142,11 +157,12 @@ def main() -> int:
         approvals=approvals,
         account_id=account_id,
         min_strength=args.min_strength,
+        mode=args.mode,
     )
 
     print(
         f"[dsh] {profile.name} 启动：account={account_id} market={market.value} "
-        f"every={args.every}s"
+        f"mode={args.mode} every={args.every}s"
     )
     if args.once:
         from dsh_runtime import run_once

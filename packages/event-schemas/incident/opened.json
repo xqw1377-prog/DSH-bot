@@ -42,6 +42,12 @@
     },
     "creation_audited": {
       "type": "boolean"
+    },
+    "risk_snapshot_id": {
+      "type": "string"
+    },
+    "candidate_id": {
+      "type": "string"
     }
   },
   "additionalProperties": false

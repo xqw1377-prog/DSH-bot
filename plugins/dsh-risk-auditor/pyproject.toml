@@ -1,0 +1,18 @@
+[project]
+name = "dsh-risk-auditor"
+version = "0.1.0"
+description = "独立风控验证插件：对 risk-policy 决定做独立二次校验，守住策略晋级/单笔风控红线"
+requires-python = ">=3.12"
+dependencies = [
+    "dsh-contracts",
+    "dsh-runtime",
+    "fastapi>=0.111,<1",
+    "uvicorn[standard]>=0.30,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

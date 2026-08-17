@@ -1,2 +1,7 @@
 export * from "./types.js";
-export { ProjectionClient } from "./projection-client.js";
+export {
+  ProjectionClient,
+  type BotTask,
+  type IncidentEvent,
+  type ChiefAnswer,
+} from "./projection-client.js";

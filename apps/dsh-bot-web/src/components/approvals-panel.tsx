@@ -4,10 +4,6 @@ import { useEffect, useState } from "react";
 import type { Approval } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
 
-// 决定动作不走 projection-api（只读），直接提交 Quant Gateway。
-const GATEWAY_URL =
-  process.env.NEXT_PUBLIC_QUANT_GATEWAY_URL || "http://127.0.0.1:8001";
-
 const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   order: "下单",
   strategy_promotion: "策略晋级",
@@ -15,7 +11,7 @@ const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   control_action: "控制动作",
 };
 
-/** 审批列表与批准/拒绝操作。决定动作直接 POST 到 Quant Gateway（projection-api 只读）。 */
+/** 审批列表走投影；决定走 BFF，decided_by 由服务端生成。 */
 export function ApprovalsPanel() {
   const [approvals, setApprovals] = useState<Approval[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,13 +43,19 @@ export function ApprovalsPanel() {
     setDecidingId(id);
     setError(null);
     try {
-      const res = await fetch(`${GATEWAY_URL}/v1/approvals/${id}/decide`, {
+      const csrf = await fetch("/api/csrf").then((r) => r.json()) as {
+        csrf_token?: string;
+      };
+      const res = await fetch(`/api/approvals/${id}/decide`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, decided_by: "human" }),
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf.csrf_token || "",
+        },
+        body: JSON.stringify({ decision }),
       });
       if (!res.ok) {
-        setError(`决定提交失败：Quant Gateway 返回 ${res.status}。`);
+        setError(`决定提交失败：BFF 返回 ${res.status}。`);
       }
     } catch {
       setError("决定提交失败：无法连接 Quant Gateway（可能未启动）。");

@@ -3,7 +3,12 @@ name = "strategy-evolution"
 version = "0.1.0"
 description = "DSH Bot 策略持续进化服务：实验账本、验证门禁、策略晋级状态机"
 requires-python = ">=3.12"
-dependencies = ["fastapi>=0.111,<1", "uvicorn[standard]>=0.30,<1", "dsh-contracts"]
+dependencies = [
+    "fastapi>=0.111,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "httpx>=0.27,<1",
+    "dsh-contracts",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

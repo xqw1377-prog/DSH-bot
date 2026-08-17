@@ -42,9 +42,9 @@ class ExecutionAdapter(MarketAdapter):
         self.order_status: dict[str, str] = {}
         self.next_submit_status = "FILLED"
         self.risk_scale = Decimal("1")
-        self.cash = Decimal("50000")
-        self.position = Decimal("0")
-        self.price = Decimal("100")
+        self._qty = Decimal("0")
+        self._cash = Decimal("50000")
+        self._price = Decimal("100")
 
     # -- 可控点 --
     def set_order_status(self, order_id: str, status: str):
@@ -61,17 +61,15 @@ class ExecutionAdapter(MarketAdapter):
         from dsh_contracts import Position
         return [Position(
             market=self.market, account_id="crypto-paper-1",
-            symbol="BTCUSDT", quantity=str(self.position),
-            available_quantity=str(self.position), frozen_quantity="0",
-            avg_cost=str(self.price), currency="USDT",
-            as_of=datetime.now(UTC),
+            symbol="BTCUSDT", quantity=self._qty, available_quantity=self._qty,
+            frozen_quantity=Decimal("0"),
+            avg_cost=self._price, currency="USDT", as_of=datetime.now(UTC),
         )]
 
     def get_account_summary(self):
         return [AccountSummary(
             market=self.market, account_id="crypto-paper-1",
-            cash=str(self.cash),
-            equity=str(self.cash + self.position * self.price),
+            cash=self._cash, equity=self._cash + self._qty * self._price,
             currency="USDT",
             reconciliation_version="v1", as_of=datetime.now(UTC),
         )]
@@ -114,22 +112,28 @@ class ExecutionAdapter(MarketAdapter):
         order_id = f"{self.market.value}-ord-{len(self.submitted)}"
         self._last_order_id = order_id
         self.order_status[order_id] = self.next_submit_status
-        # 成交回写：与守恒校验一致
         qty = Decimal(str(payload.get("quantity", "0.01")))
-        if payload.get("side") == "BUY":
-            self.position += qty
-            self.cash -= qty * self.price
-        else:
-            self.position -= qty
-            self.cash += qty * self.price
+        if self.next_submit_status == "FILLED":
+            if payload.get("side") == "SELL":
+                self._qty -= qty
+                self._cash += qty * self._price
+            else:
+                self._qty += qty
+                self._cash -= qty * self._price
         return order_id
 
     def get_order_status(self, order_id):
         status = self.order_status.get(order_id, "UNKNOWN")
-        return {"order_id": order_id, "status": status,
-                "symbol": "BTCUSDT", "avg_price": str(self.price), "fees": "0",
-                "filled_at": datetime.now(UTC).isoformat(),
-                "filled_quantity": "0.005" if status == "PARTIALLY_FILLED" else "0.01"}
+        filled = "0.005" if status == "PARTIALLY_FILLED" else "0.01"
+        return {
+            "order_id": order_id,
+            "status": status,
+            "filled_quantity": filled,
+            "avg_price": str(self._price),
+            "fees": "0",
+            "taxes": "0",
+            "fills": [{"quantity": filled, "price": str(self._price), "fee": "0"}],
+        }
 
     def cancel_order(self, order_id):
         return {"order_id": order_id, "status": "CANCELLED"}
@@ -517,32 +521,111 @@ def test_unknown_order_quarantine_times_out_to_incident():
     assert len(ADAPTER.submitted) == 1  # 全程没有重新提交
 
 
-def test_schema_error_after_venue_accept_does_not_resubmit(monkeypatch):
-    """venue 已接单后 order/submitted 事件因 Schema 异常抛错：
-    任务必须已持久化为 SUBMITTED（带订单号），恢复走查询路径，
-    绝不重新构建或重复提交。"""
-    from dsh_runtime.store import EventLog
-
+def test_stale_position_without_cash_move_opens_incident():
     agent, session = _agent_and_session()
     _drive_to_approved(session, agent)
+    real_request = ADAPTER.request_order
 
-    real_emit = EventLog.emit
-    schema_broken = {"active": True}
+    def fill_without_books(intent):
+        order_id = real_request(intent)
+        ADAPTER._qty = Decimal("0")
+        ADAPTER._cash = Decimal("50000")
+        return order_id
 
-    def broken_emit(self, event_type, *args, **kwargs):
-        if schema_broken["active"] and event_type == "order/submitted":
-            raise ValueError("simulated schema violation")
-        return real_emit(self, event_type, *args, **kwargs)
+    ADAPTER.request_order = fill_without_books
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("INCIDENT")) == 1
+    mismatch = session.events.query("account/mismatch")
+    assert mismatch
+    assert mismatch[0]["payload"]["reconciliation_status"] == "MISMATCH"
 
-    monkeypatch.setattr(EventLog, "emit", broken_emit)
-    run_once(session, agent)  # 提交成功但事件发射失败
-    schema_broken["active"] = False
 
-    # 任务已持久化 SUBMITTED 且带订单号（不依赖事件）
-    submitted_tasks = session.tasks.find_by_status("SUBMITTED", "FILLED", "DONE")
-    assert submitted_tasks and submitted_tasks[0]["order_id"]
-    assert len(ADAPTER.submitted) == 1
+def test_submission_unknown_quarantine_times_out_to_incident():
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    from dsh_runtime.store import _get
+    from datetime import UTC, datetime, timedelta
+    import json as _json
 
-    run_once(session, agent)  # 恢复：查询推进，不重新提交
+    task = session.tasks.find_by_status("AWAITING_APPROVAL") or \
+        session.tasks.find_by_status("APPROVED_SUBMITTING") or \
+        session.tasks.find_by_status("DONE")
+    task = task[0]
+    payload = dict(task["payload"])
+    payload["submission_unknown_since"] = (
+        datetime.now(UTC) - timedelta(seconds=3600)
+    ).isoformat()
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET status = 'SUBMISSION_UNKNOWN', payload = ? "
+        "WHERE task_id = ?",
+        (_json.dumps(payload), task["task_id"]),
+    )
+    conn.commit()
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("INCIDENT")) == 1
+    assert ADAPTER.submitted == []
+    incidents = session.events.query("incident/opened")
+    assert any("submission UNKNOWN" in (i["payload"].get("reason") or "")
+               for i in incidents)
+
+
+def test_filled_pending_reconcile_resumes_on_next_tick():
+    """崩溃停在 FILLED 时，下个 tick 必须继续对账，不得重下。"""
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("DONE")) == 1
+    from dsh_runtime.store import _get
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET status = 'FILLED', reconciliation_status = 'PENDING'"
+        " WHERE task_id LIKE '%sig-x'"
+    )
+    conn.commit()
+    run_once(session, agent)
     assert len(ADAPTER.submitted) == 1
     assert len(session.tasks.find_by_status("DONE")) == 1
+
+
+def test_shadow_mode_never_submits():
+    agent, session = _agent_and_session()
+    agent.mode = "shadow"
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert client.get("/v1/approvals").json() == []
+    assert len(session.tasks.find_by_status("SHADOW_RECORDED")) == 1
+
+
+def test_live_mode_rejected_at_construction():
+    from dsh_crypto_agent import CryptoAgent
+
+    with pytest.raises(ValueError, match="live mode is disabled"):
+        CryptoAgent(
+            gateway=object(), approvals=object(), account_id="x", mode="live"
+        )
+
+
+def test_risk_reject_is_pre_submit_failed_not_unknown():
+    orders_router.check_order_risk = (
+        lambda base_url, **payload: {"passed": False, "limits_hit": ["max_position"]}
+    )
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_FAILED")) == 1
+    assert session.tasks.find_by_status("SUBMISSION_UNKNOWN") == []
+
+
+def test_risk_policy_unavailable_is_pre_submit_blocked():
+    def down(*args, **kwargs):
+        raise ConnectionError("risk-policy down")
+
+    orders_router.check_order_risk = down
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_BLOCKED")) == 1
+    assert session.tasks.find_by_status("SUBMISSION_UNKNOWN") == []

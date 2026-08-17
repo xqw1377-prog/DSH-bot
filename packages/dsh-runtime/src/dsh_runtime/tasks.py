@@ -4,8 +4,8 @@
 多阶段动作建模为任务，状态落 SQLite，重启后 Agent 从上次状态继续，
 绝不因失忆重复发起审批或重复下单。
 
-订单任务终态：仅在订单达到终态并完成账户对账后进入 RECONCILED。
-SUBMITTED / ACKNOWLEDGED / FILLED 都不是任务终态。
+成功终态：FILLED + MATCHED → DONE。SUBMITTED / ACKNOWLEDGED / FILLED
+都不是任务终态；对账失败或 UNKNOWN 超时进入 INCIDENT。
 """
 
 import json
@@ -15,15 +15,21 @@ from datetime import UTC, datetime
 _TRANSITIONS: dict[str, set[str]] = {
     # 请求确定未到达交易系统（预览/审批/再校验失败）→ PRE_SUBMIT_FAILED
     "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED", "PRE_SUBMIT_FAILED"},
-    "PREVIEWED": {"AWAITING_APPROVAL", "FAILED", "PRE_SUBMIT_FAILED"},
+    "PREVIEWED": {"AWAITING_APPROVAL", "FAILED", "PRE_SUBMIT_FAILED", "SHADOW_RECORDED"},
     "AWAITING_APPROVAL": {
         "APPROVED_SUBMITTING", "REJECTED", "EXPIRED",
         "APPROVAL_UNKNOWN", "FAILED", "PRE_SUBMIT_FAILED",
     },
     # 已尝试提交但结果未知（网络错误/网关崩溃窗口）→ SUBMISSION_UNKNOWN：
     # 禁止重提，只能通过幂等键查询认领或确认失败
-    "APPROVED_SUBMITTING": {"SUBMITTED", "FAILED", "SUBMISSION_UNKNOWN"},
-    "SUBMISSION_UNKNOWN": {"SUBMISSION_UNKNOWN", "SUBMITTED", "FAILED"},
+    "APPROVED_SUBMITTING": {
+        "SUBMITTED", "FAILED", "SUBMISSION_UNKNOWN",
+        "PRE_SUBMIT_FAILED", "PRE_SUBMIT_BLOCKED", "ORDER_REJECTED",
+    },
+    "PRE_SUBMIT_BLOCKED": {
+        "APPROVED_SUBMITTING", "PRE_SUBMIT_FAILED", "SUBMISSION_UNKNOWN", "INCIDENT",
+    },
+    "SUBMISSION_UNKNOWN": {"SUBMITTED", "FAILED", "INCIDENT"},
     # 订单生命周期（对账前均非终态）
     # UNKNOWN 隔离超时可从任何在途订单状态直达 INCIDENT
     "SUBMITTED": {
@@ -34,7 +40,9 @@ _TRANSITIONS: dict[str, set[str]] = {
         "PARTIALLY_FILLED", "FILLED", "CANCELLED", "ORDER_REJECTED",
         "INCIDENT", "FAILED",
     },
-    "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELLED", "FAILED"},
+    "PARTIALLY_FILLED": {
+        "PARTIALLY_FILLED", "FILLED", "CANCELLED", "INCIDENT", "FAILED",
+    },
     # 成交与对账分离：FILLED + MATCHED → DONE；FILLED + MISMATCH → INCIDENT；
     # 对账数据暂不可用时自环保持 FILLED（reconciliation_status=PENDING）重试
     "FILLED": {"FILLED", "DONE", "INCIDENT", "RECONCILED", "FAILED"},
@@ -47,13 +55,14 @@ _TRANSITIONS: dict[str, set[str]] = {
     "APPROVAL_UNKNOWN": set(),
     "INCIDENT": set(),
     "PRE_SUBMIT_FAILED": set(),
+    "SHADOW_RECORDED": set(),
     "DONE": set(),
 }
 
 TERMINAL = {
     "RECONCILED", "FAILED", "REJECTED", "EXPIRED",
     "CANCELLED", "ORDER_REJECTED", "DONE", "APPROVAL_UNKNOWN", "INCIDENT",
-    "PRE_SUBMIT_FAILED",
+    "PRE_SUBMIT_FAILED", "SHADOW_RECORDED",
 }
 
 
@@ -115,6 +124,27 @@ class TaskStore:
             (self.bot, *statuses),
         ).fetchall()
         return [t for t in (self.get(r[0]) for r in rows) if t]
+
+    def update_payload(self, task_id: str, payload: dict, **fields) -> dict:
+        """回写任务 payload（及可选的 idempotency_key 等），不改变状态。"""
+        from .store import _get
+
+        task = self.get(task_id)
+        if task is None:
+            raise TaskError(f"task not found: {task_id}")
+        now = datetime.now(UTC).isoformat()
+        updates = {"payload": json.dumps(payload, ensure_ascii=False), "updated_at": now}
+        updates.update({k: v for k, v in fields.items() if v is not None})
+        assignments = ", ".join(f"{k} = ?" for k in updates)
+        params = list(updates.values()) + [task_id, self.bot]
+        _get().execute(
+            f"UPDATE bot_tasks SET {assignments} WHERE task_id = ? AND bot = ?",
+            params,
+        )
+        _get().commit()
+        result = self.get(task_id)
+        assert result is not None
+        return result
 
     def transition(self, task_id: str, target: str, **updates) -> dict:
         """单步推进任务状态并回写字段（approval_id/order_id 等）。"""

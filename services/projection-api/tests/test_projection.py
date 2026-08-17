@@ -70,6 +70,85 @@ def test_approvals_params_forwarded(mock_upstream):
     assert "market=A_SHARE" in seen["url"]
 
 
+def test_chief_refuses_action_verbs(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_RUNTIME_DB", str(tmp_path / "missing.db"))
+    resp = client.post("/v1/chief/query", json={"question": "请你立刻批准这笔订单"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["refused"] is True
+    assert "不能执行" in body["text"]
+
+
+def test_chief_includes_health_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_RUNTIME_DB", str(tmp_path / "missing.db"))
+
+    def fake_get(url, headers=None, timeout=2.0):
+        market = "CRYPTO" if "CRYPTO" in url else "A_SHARE"
+        return type(
+            "R",
+            (),
+            {
+                "is_success": True,
+                "status_code": 200,
+                "json": lambda self: {
+                    "system_ok": True,
+                    "data_fresh": market == "CRYPTO",
+                },
+            },
+        )()
+
+    monkeypatch.setattr(projection_main.httpx, "get", fake_get)
+    resp = client.post("/v1/chief/query", json={"question": "现在系统健康吗"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["refused"] is False
+    assert "CRYPTO 正常" in body["text"]
+    assert "A_SHARE 降级" in body["text"]
+    assert "不含资金动作" in body["text"]
+
+
+def test_incidents_empty_without_runtime_db(monkeypatch):
+    monkeypatch.delenv("DSH_RUNTIME_DB", raising=False)
+
+    def fake_get(url, params=None, headers=None, timeout=2.0):
+        return type("R", (), {"is_success": True, "json": lambda self: []})()
+
+    monkeypatch.setattr(projection_main.httpx, "get", fake_get)
+    assert client.get("/v1/incidents").json() == []
+
+
+def test_incidents_include_gateway_kill_switch_audit(monkeypatch):
+    monkeypatch.delenv("DSH_RUNTIME_DB", raising=False)
+
+    def fake_get(url, params=None, headers=None, timeout=2.0):
+        assert "/v1/audit" in url
+        return type(
+            "R",
+            (),
+            {
+                "is_success": True,
+                "json": lambda self: [
+                    {
+                        "audit_id": "audit-ks-1",
+                        "occurred_at": "2026-08-17T00:00:00+00:00",
+                        "actor": "alice",
+                        "action": "kill_switch.succeeded",
+                        "market": "CRYPTO",
+                        "subject_id": "paper-crypto-001",
+                        "outcome": "OK",
+                        "detail": "emergency_stop engaged",
+                    }
+                ],
+            },
+        )()
+
+    monkeypatch.setattr(projection_main.httpx, "get", fake_get)
+    rows = client.get("/v1/incidents").json()
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "kill_switch/succeeded"
+    assert rows[0]["source"] == "gateway-audit"
+
+
 def test_experiments_proxied_to_evolution(mock_upstream):
     seen = {}
 

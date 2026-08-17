@@ -96,3 +96,13 @@ def test_event_payload_schema_validation_enforced():
         "approval_id": "a-1", "submitted_at": "2026-01-01T00:00:00Z",
     })
     assert len(session.events.query("order/submitted")) == 1
+
+
+def test_emit_without_schema_fails_closed():
+    session = BotSession.for_profile(Profile(
+        name="t", description="", market="CRYPTO",
+        primary_tools=frozenset(), prohibited=frozenset(),
+    ))
+    with pytest.raises(ValueError, match="no payload schema"):
+        missing = "does/" + "not.exist"
+        session.events.emit(missing, "CRYPTO", "bot", "t", {"x": 1})

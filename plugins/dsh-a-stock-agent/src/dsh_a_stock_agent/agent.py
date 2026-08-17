@@ -1,29 +1,27 @@
-"""A 股专业 Bot。
-
-执行闭环（审批/再校验/提交/崩溃恢复/对账）全部复用 TradeExecutionCore；
-A 股特有规则（交易时段与午休、周末休市、100 股整手、±10% 涨跌停、T+1）
-由 AStockMarketPolicy 注入，不复制任何执行代码。
-"""
+"""A 股 Bot：与 Crypto 共用 TradeExecutionCore，Paper 先、LLM 不进。"""
 
 from dsh_contracts import Market
-from dsh_gateway_client import GatewayClient
-from dsh_trade_approval import ApprovalWorkflow
-from dsh_trade_core import AStockMarketPolicy, TradeExecutionCore
+from dsh_runtime.execution import TradeExecutionCore
 
 
-class AStockAgent(TradeExecutionCore):
+class AShareAgent(TradeExecutionCore):
     name = "a-stock-bot"
-    market = Market.A_SHARE
 
     def __init__(
         self,
-        gateway: GatewayClient,
-        approvals: ApprovalWorkflow,
+        gateway,
+        approvals,
         account_id: str,
         min_strength: float = 0.6,
-        policy: AStockMarketPolicy | None = None,
+        mode: str = "paper",
     ):
         super().__init__(
-            gateway=gateway, approvals=approvals, account_id=account_id,
-            min_strength=min_strength, policy=policy or AStockMarketPolicy(),
+            name="a-stock-bot",
+            market=Market.A_SHARE,
+            gateway=gateway,
+            approvals=approvals,
+            account_id=account_id,
+            min_strength=min_strength,
+            mode=mode,
+            idempotency_prefix="ashare-paper",
         )

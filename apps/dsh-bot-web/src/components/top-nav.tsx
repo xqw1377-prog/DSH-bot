@@ -4,6 +4,8 @@ const NAV_ITEMS = [
   { href: "/", label: "Bot Home" },
   { href: "/chat", label: "Chief Chat" },
   { href: "/approvals", label: "审批" },
+  { href: "/tasks", label: "任务" },
+  { href: "/incidents", label: "事故" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/strategy-lab", label: "Strategy Lab" },
 ];

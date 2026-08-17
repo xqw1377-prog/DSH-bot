@@ -1,5 +1,5 @@
 name: a-stock-bot
-description: A股专业 Bot，交易时段内监控信号，整手/涨跌停/T+1 规则由市场策略注入
+description: A 股专业 Bot，复用共享执行核；Paper 审批下单，禁止直接下单与持有券商密钥
 market: A_SHARE
 primary_tools:
   - query_health
@@ -7,8 +7,8 @@ primary_tools:
   - query_signals
   - preview_order
   - query_approvals
-  - query_accounts
   - query_order_status
+  - query_accounts
   - submit_order
 prohibited:
   - direct_order

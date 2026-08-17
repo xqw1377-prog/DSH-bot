@@ -14,20 +14,44 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: |
-          # 动态发现所有含 pyproject.toml 的包，避免引用不存在的插件
           PKGS=$(find packages services plugins -name pyproject.toml \
             -exec dirname {} \; | sed 's/^/-e /' | tr '\n' ' ')
           pip install $PKGS pytest
       - name: Schema compatibility check
         run: python scripts/check_schemas.py
       - name: Tests
-        run: pytest services/ plugins/ packages/ -q --tb=short -ra
+        run: pytest services/ plugins/ packages/ -q --tb=short -ra --import-mode=importlib
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          PKGS=$(find packages services plugins -name pyproject.toml \
+            -exec dirname {} \; | sed 's/^/-e /' | tr '\n' ' ')
+          pip install $PKGS
+      - name: Prepare local env
+        run: |
+          cp .env.local.example .env.local
+          chmod +x scripts/smoke_p0.sh scripts/start-local.sh scripts/start-backends.sh \
+            scripts/check_start_backends.sh
+      - name: Production start script refusals
+        run: bash scripts/check_start_backends.sh
+      - name: Process-level P0 smoke
+        run: bash scripts/smoke_p0.sh
 
   frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4  # 版本由 package.json 的 packageManager 决定
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.11.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -36,7 +60,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Lint
         run: |
-          pnpm --filter @dsh-bot/client-sdk build  # 类型声明在 dist，先构建再 lint
+          pnpm --filter @dsh-bot/client-sdk build
           pnpm -r lint
       - name: Test
         run: pnpm --filter dsh-bot-web test

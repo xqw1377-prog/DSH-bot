@@ -64,13 +64,16 @@ def multiworker_gateway(tmp_path):
         env=env, cwd=str(ROOT), stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    # 等 risk-policy 就绪（二次硬风控不可达时网关失败关闭，全是 503）
-    for _ in range(60):
+    for _ in range(40):
         try:
-            httpx.get("http://127.0.0.1:8093/healthz", timeout=2)
-            break
+            if httpx.get("http://127.0.0.1:8093/healthz", timeout=2).status_code == 200:
+                break
         except Exception:
-            time.sleep(0.5)
+            time.sleep(0.25)
+    else:
+        gw.terminate()
+        rp.terminate()
+        pytest.fail("risk-policy did not start")
     yield base
     gw.send_signal(signal.SIGTERM); gw.wait(timeout=10)
     rp.send_signal(signal.SIGTERM); rp.wait(timeout=10)

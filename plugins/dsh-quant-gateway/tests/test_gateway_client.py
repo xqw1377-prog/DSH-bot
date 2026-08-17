@@ -47,12 +47,26 @@ def test_request_order_success(mock_gateway, client):
 
 def test_request_order_fail_closed_on_reject(mock_gateway, client):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(422, json={"detail": "approval required"})
+        return httpx.Response(
+            422,
+            json={
+                "detail": {
+                    "error_code": "APPROVAL_REQUIRED",
+                    "phase": "PRE_SUBMIT",
+                    "retryable": False,
+                    "submission_unknown": False,
+                    "request_id": "req-1",
+                    "message": "approval required",
+                }
+            },
+        )
 
     _with_handler(mock_gateway, handler, client)
     with pytest.raises(GatewayError) as exc_info:
         client.request_order(make_intent())
     assert exc_info.value.status_code == 422
+    assert exc_info.value.phase == "PRE_SUBMIT"
+    assert exc_info.value.submission_unknown is False
     assert "approval required" in exc_info.value.detail
 
 
@@ -73,8 +87,23 @@ def test_unreachable_gateway_raises(mock_gateway, client):
         raise httpx.ConnectError("down")
 
     _with_handler(mock_gateway, handler, client)
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(GatewayError) as exc_info:
         client.request_order(make_intent())
+    assert exc_info.value.submission_unknown is True
+    assert exc_info.value.error_code == "GATEWAY_UNREACHABLE"
+
+
+def test_client_sends_api_key(mock_gateway):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["key"] = request.headers.get("x-api-key")
+        return httpx.Response(200, json={"system_ok": True})
+
+    mock_gateway.handler["handler"] = handler
+    keyed = GatewayClient(base_url=mock_gateway.url, api_key="chief-secret")
+    keyed.get_health(Market.CRYPTO)
+    assert seen["key"] == "chief-secret"
 
 
 def test_idempotency_key_unique_and_prefixed():

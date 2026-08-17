@@ -86,6 +86,9 @@ class CheckResult(BaseModel):
     passed: bool
     limits_hit: list[str] = Field(default_factory=list)
     budget: RiskBudget | None = None
+    # CRITICAL 才允许触发 Kill Switch；HIGH 只拒单
+    severity: str = "OK"
+    kill_switch: bool = False
 
 
 @app.get("/healthz")
@@ -115,23 +118,41 @@ def check_order(check: OrderRiskCheck) -> dict:
     if budget is None:
         # 未配置预算 = 失败关闭
         return CheckResult(
-            passed=False, limits_hit=[f"no_budget:{check.market}"]
+            passed=False,
+            limits_hit=[f"no_budget:{check.market}"],
+            severity="CRITICAL",
+            kill_switch=True,
         ).model_dump(mode="json")
 
     limits: list[str] = []
+    critical = False
     if check.notional > budget.max_position:
         limits.append(
             f"max_position: notional {check.notional} > {budget.max_position}"
         )
     if check.equity <= 0:
         limits.append("equity_unavailable")
+        critical = True
     elif check.worst_case_loss > check.equity * budget.max_loss_ratio_per_order:
         limits.append(
             "max_loss_ratio_per_order: "
             f"{check.worst_case_loss} > equity*{budget.max_loss_ratio_per_order}"
         )
+        critical = True
     if check.quantity <= 0:
         limits.append("non_positive_quantity")
 
-    result = CheckResult(passed=not limits, limits_hit=limits, budget=budget)
+    if not limits:
+        severity = "OK"
+    elif critical:
+        severity = "CRITICAL"
+    else:
+        severity = "HIGH"
+    result = CheckResult(
+        passed=not limits,
+        limits_hit=limits,
+        budget=budget,
+        severity=severity,
+        kill_switch=critical,
+    )
     return result.model_dump(mode="json")

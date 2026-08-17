@@ -31,6 +31,9 @@ class SignalFakeAdapter(MarketAdapter):
 
     def __init__(self, market: Market):
         self.market = market
+        self._qty = Decimal("0")
+        self._cash = Decimal("50000")
+        self._price = Decimal("65000")
 
     def get_health(self) -> HealthStatus:
         return HealthStatus(
@@ -39,27 +42,20 @@ class SignalFakeAdapter(MarketAdapter):
             as_of=datetime.now(UTC),
         )
 
-    def __init__(self, market):
-        self.market = market
-        self.position = Decimal("0.01")
-        self.cash = Decimal("50000")
-        self.price = Decimal("65000")
-
     def get_positions(self, account_id=None):
         from dsh_contracts import Position
         return [Position(
             market=self.market, account_id="crypto-paper-1",
-            symbol="BTC/USDT", quantity=str(self.position),
-            available_quantity=str(self.position), frozen_quantity="0",
-            avg_cost="65000", currency="USDT", as_of=datetime.now(UTC),
+            symbol="BTC/USDT", quantity=self._qty, available_quantity=self._qty,
+            frozen_quantity=Decimal("0"),
+            avg_cost=self._price, currency="USDT", as_of=datetime.now(UTC),
         )]
 
     def get_account_summary(self):
         from dsh_contracts import AccountSummary
         return [AccountSummary(
             market=self.market, account_id="crypto-paper-1",
-            cash=str(self.cash),
-            equity=str(self.cash + self.position * self.price),
+            cash=self._cash, equity=self._cash + self._qty * self._price,
             currency="USDT",
             reconciliation_version="v1", as_of=datetime.now(UTC),
         )]
@@ -88,27 +84,17 @@ class SignalFakeAdapter(MarketAdapter):
 
     def request_order(self, intent):
         # 经 Gateway 的 Paper 提交是合法路径；红线是不绕过网关
+        payload = intent if isinstance(intent, dict) else intent.model_dump(mode="json")
         self.submitted = getattr(self, "submitted", [])
-        payload = intent if isinstance(intent, dict) else intent
         self.submitted.append(payload)
         qty = Decimal(str(payload.get("quantity", "0.01")))
-        if payload.get("side") == "BUY":
-            self.position += qty
-            self.cash -= qty * self.price
+        if payload.get("side") == "SELL":
+            self._qty -= qty
+            self._cash += qty * self._price
         else:
-            self.position -= qty
-            self.cash += qty * self.price
-        self._last = {"order_id": f"{self.market.value}-ord-{len(self.submitted)}",
-                      "status": "FILLED", "symbol": "BTC/USDT",
-                      "filled_quantity": str(qty), "avg_price": "65000",
-                      "fees": "0", "filled_at": datetime.now(UTC).isoformat()}
-        return self._last["order_id"]
-
-    def find_order_by_idempotency_key(self, key):
-        for payload in self.submitted:
-            if payload.get("idempotency_key") == key:
-                return self._last
-        return None
+            self._qty += qty
+            self._cash -= qty * self._price
+        return f"{self.market.value}-ord-{len(self.submitted)}"
 
     def get_order_status(self, order_id):
         return {
