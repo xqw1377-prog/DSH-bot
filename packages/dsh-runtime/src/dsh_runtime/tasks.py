@@ -23,7 +23,7 @@ _TRANSITIONS: dict[str, set[str]] = {
     # 已尝试提交但结果未知（网络错误/网关崩溃窗口）→ SUBMISSION_UNKNOWN：
     # 禁止重提，只能通过幂等键查询认领或确认失败
     "APPROVED_SUBMITTING": {"SUBMITTED", "FAILED", "SUBMISSION_UNKNOWN"},
-    "SUBMISSION_UNKNOWN": {"SUBMITTED", "FAILED"},
+    "SUBMISSION_UNKNOWN": {"SUBMISSION_UNKNOWN", "SUBMITTED", "FAILED"},
     # 订单生命周期（对账前均非终态）
     # UNKNOWN 隔离超时可从任何在途订单状态直达 INCIDENT
     "SUBMITTED": {

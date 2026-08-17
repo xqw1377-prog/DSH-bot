@@ -40,6 +40,16 @@
     "fees": {
       "type": "string",
       "description": "decimal string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "approval_id": {
+      "type": "string"
+    },
+    "partial": {
+      "type": "boolean"
     }
-  }
+  },
+  "additionalProperties": false
 }

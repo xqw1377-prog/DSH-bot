@@ -42,6 +42,9 @@ def paper_account_id(market: Market) -> str:
 class PaperAdapter(MarketAdapter):
     """代表现有量化系统的本地纸上实现。"""
 
+    # 同步落库 + 稳定幂等键索引：「查无」即可断定从未接受
+    order_lookup_consistency = "STRONG"
+
     def __init__(self, market: Market) -> None:
         self.market = market
         self._ids = count(1)

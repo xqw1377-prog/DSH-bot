@@ -11,8 +11,7 @@
       "type": "string"
     },
     "decided_by": {
-      "type": "string",
-      "description": "人工身份，禁止填 bot"
+      "type": "string"
     },
     "decided_at": {
       "type": "string",
@@ -20,6 +19,10 @@
     },
     "reason": {
       "type": "string"
+    },
+    "task_id": {
+      "type": "string"
     }
-  }
+  },
+  "additionalProperties": false
 }

@@ -151,9 +151,10 @@ class EventLog:
         validator = None
         if schema_file.exists():
             try:
-                from jsonschema import Draft202012Validator
+                from jsonschema import Draft202012Validator, FormatChecker
                 validator = Draft202012Validator(
-                    json.loads(schema_file.read_text())
+                    json.loads(schema_file.read_text()),
+                    format_checker=FormatChecker(),  # date-time 真校验
                 )
             except ImportError:
                 validator = None

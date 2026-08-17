@@ -21,6 +21,8 @@ from quant_gateway.routers import orders
 class FakeAdapter(MarketAdapter):
     """代表现有量化系统的内存实现，仅用于测试。"""
 
+    order_lookup_consistency = "STRONG"
+
     def __init__(self, market: Market) -> None:
         self.market = market
         self._ids = count(1)

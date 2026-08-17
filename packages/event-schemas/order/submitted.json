@@ -16,8 +16,7 @@
       "description": "量化系统返回的权威订单 ID"
     },
     "idempotency_key": {
-      "type": "string",
-      "format": "uuid"
+      "type": "string"
     },
     "market": {
       "type": "string",
@@ -32,6 +31,10 @@
     "submitted_at": {
       "type": "string",
       "format": "date-time"
+    },
+    "task_id": {
+      "type": "string"
     }
-  }
+  },
+  "additionalProperties": false
 }

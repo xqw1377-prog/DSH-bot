@@ -142,8 +142,19 @@ def request_order(market: Market, intent: dict,
             return {"order_id": recovered_id, "status": "SUBMITTED",
                     "recovered": True}
         if recovered is None:
-            # venue 确认从未接受：释放幂等键，本次请求按新单继续走完整门禁
-            storage.mark_idempotency_failed(idempotency_key)
+            # 「查无」只有在适配器声明强一致查询时才可断定从未接受；
+            # EVENTUAL/UNSUPPORTED 下查无 ≠ 未接单，保持占用转人工
+            if getattr(adapter, "order_lookup_consistency", "UNSUPPORTED") == "STRONG":
+                storage.mark_idempotency_failed(idempotency_key)
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "submission unknown: venue lookup not strongly "
+                        "consistent; manual intervention required; "
+                        "resubmission blocked"
+                    ),
+                )
         else:
             # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提
             raise HTTPException(

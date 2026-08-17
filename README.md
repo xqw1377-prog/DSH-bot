@@ -2,6 +2,10 @@
 
 基于 DeepSeek Harness 的持续进化量化 Agent 平台。
 
+> **当前版本定位（paper-closeout-v0.1）**：`execution_mode = paper`
+> —— 单机、多 worker、Paper 执行闭环基线。可用于 Paper/Testnet 全流程
+> 验证，**不是实盘生产就绪版本**（实盘前 P0 见 docs/harness-integration.md）。
+
 DSH Bot 是量化系统上方的智能控制面：让用户以自然语言管理研究、信号、策略、风险、审批、异常和策略进化，同时保留确定性量化系统对资金和订单的最终控制。
 
 ## 架构原则

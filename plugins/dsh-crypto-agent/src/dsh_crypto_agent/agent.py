@@ -282,9 +282,43 @@ class CryptoAgent:
         conn.commit()
         self._dispatch_submit(session, task, intent)
 
+    def _reconcile_tolerance() -> Decimal:
+        return Decimal("0.00000001")
+
+    def _snapshot_pre_trade(self, session: BotSession, task: dict) -> None:
+        """提交前快照现金与持仓：对账阶段做数值守恒校验的基线。"""
+        # 重读最新任务：调用方手里的 task 可能早于 order_intent 持久化，
+        # 直接覆盖会把已持久化字段抹掉
+        task = session.tasks.get(task["task_id"]) or task
+        if task["payload"].get("pre_cash") is not None:
+            return  # 快照只取一次：重试/恢复路径沿用首次基线
+        try:
+            session.use("query_accounts")
+            accounts = self.gateway.get_account_summary(Market.CRYPTO)
+            session.use("query_positions")
+            positions = self.gateway.get_positions(
+                Market.CRYPTO, account_id=self.account_id
+            )
+        except GatewayError:
+            return  # 快照失败不阻断提交；对账时以 venue 记录为准
+        symbol = task["payload"]["symbol"]
+        match = next((p for p in positions if p["symbol"] == symbol), None)
+        payload = dict(task["payload"])
+        payload["pre_cash"] = str(accounts[0]["cash"]) if accounts else None
+        payload["pre_position"] = str(match["quantity"]) if match else "0"
+        from dsh_runtime.store import _get
+        import json as _json
+        conn = _get()
+        conn.execute(
+            "UPDATE bot_tasks SET payload = ? WHERE task_id = ?",
+            (_json.dumps(payload, ensure_ascii=False), task["task_id"]),
+        )
+        conn.commit()
+
     def _dispatch_submit(self, session: BotSession, task: dict,
                          intent: OrderIntent) -> None:
         signal = task["payload"]
+        self._snapshot_pre_trade(session, task)
         try:
             session.use("submit_order")
             # 复用预览产生的风险快照：正式提交时网关按此查验并二次硬风控
@@ -302,8 +336,6 @@ class CryptoAgent:
             result = self.gateway.request_order(intent)
         except GatewayError as exc:
             if exc.status_code == 409:
-                # 幂等冲突：既有提交（并发/崩溃重启/重复批准）——
-                # 认领既有订单进入状态轮询，绝不重新下单
                 self._adopt_existing_order(session, task)
                 return
             # 提交结果未知（网络/5xx）：SUBMISSION_UNKNOWN，禁止盲目重试
@@ -483,8 +515,9 @@ class CryptoAgent:
         """完整账户对账：成交数量与均价、手续费、现金、可用/冻结余额、
         持仓、订单累计成交量、对账时间。全部一致才 MATCHED → DONE。"""
         order_id = task["order_id"]
-        expected = Decimal(str(task["payload"].get("quantity", "0.01")))
-        symbol = task["payload"]["symbol"]
+        signal = task["payload"]
+        expected = Decimal(str(signal.get("quantity", "0.01")))
+        symbol = signal["symbol"]
         try:
             session.use("query_order_status")
             venue_order = self.gateway.get_order_status(Market.CRYPTO, order_id)
@@ -528,6 +561,57 @@ class CryptoAgent:
             )
             return
         filled_qty = Decimal(str(venue_order.get("filled_quantity", expected)))
+        # ---- 数值守恒校验（Decimal，容差 1e-8）----
+        tol = Decimal("0.00000001")
+        numeric_problems = []
+        position_now = Decimal(str(match["quantity"]))
+        pre_position = Decimal(str(signal.get("pre_position", "0")))
+        side = signal.get("side", "BUY")
+        expected_position_delta = filled_qty if side == "BUY" else -filled_qty
+        if abs(position_now - (pre_position + expected_position_delta)) > tol:
+            numeric_problems.append(
+                f"position {pre_position}+{expected_position_delta}="
+                f"{pre_position + expected_position_delta} but got {position_now}")
+        avg_price = Decimal(str(venue_order.get("avg_price", "0")))
+        fees = Decimal(str(venue_order.get("fees", "0")))
+        pre_cash = signal.get("pre_cash")
+        if pre_cash is not None:
+            cash_now = Decimal(str(accounts[0]["cash"]))
+            cash_flow = (filled_qty * avg_price) + fees if side == "BUY" \
+                else -((filled_qty * avg_price) - fees)
+            expected_cash = Decimal(str(pre_cash)) - cash_flow
+            if abs(cash_now - expected_cash) > tol:
+                numeric_problems.append(
+                    f"cash {pre_cash}-{cash_flow}={expected_cash}"
+                    f" but got {cash_now}")
+        available = Decimal(str(match["available_quantity"]))
+        frozen = Decimal(str(match.get("frozen_quantity", "0")))
+        if available + frozen != position_now:
+            numeric_problems.append(
+                f"available {available} + frozen {frozen} != total {position_now}")
+        if numeric_problems:
+            session.tasks.transition(task["task_id"], "INCIDENT",
+                                     reconciliation_status="MISMATCH")
+            session.events.emit(
+                "account/mismatch", "CRYPTO", "bot", self.name,
+                {"task_id": task["task_id"], "order_id": order_id,
+                 "execution_status": "FILLED",
+                 "reconciliation_status": "MISMATCH",
+                 "expected_quantity": str(expected),
+                 "positions_quantity": str(position_now),
+                 "numeric_problems": numeric_problems},
+            )
+            session.events.emit(
+                "incident/opened", "CRYPTO", "bot", self.name,
+                {"task_id": task["task_id"], "order_id": order_id,
+                 "reason": "reconciliation numeric inconsistency",
+                 "problems": numeric_problems},
+            )
+            session.memory.remember(
+                f"对账数值不一致：订单 {order_id}：{numeric_problems}，已开事故",
+                kind="error", tags=[task["task_id"], "reconcile-mismatch"],
+            )
+            return
         # 对账明细：成交数量与均价、手续费、现金、可用/冻结、持仓、
         # 订单累计成交量与对账时间（数据版本用 venue 的 filled_at/as_of）
         reconciliation = {

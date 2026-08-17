@@ -42,6 +42,9 @@ class ExecutionAdapter(MarketAdapter):
         self.order_status: dict[str, str] = {}
         self.next_submit_status = "FILLED"
         self.risk_scale = Decimal("1")
+        self.cash = Decimal("50000")
+        self.position = Decimal("0")
+        self.price = Decimal("100")
 
     # -- 可控点 --
     def set_order_status(self, order_id: str, status: str):
@@ -58,14 +61,18 @@ class ExecutionAdapter(MarketAdapter):
         from dsh_contracts import Position
         return [Position(
             market=self.market, account_id="crypto-paper-1",
-            symbol="BTCUSDT", quantity="0.01", available_quantity="0.01",
-            avg_cost="100", currency="USDT", as_of=datetime.now(UTC),
+            symbol="BTCUSDT", quantity=str(self.position),
+            available_quantity=str(self.position), frozen_quantity="0",
+            avg_cost=str(self.price), currency="USDT",
+            as_of=datetime.now(UTC),
         )]
 
     def get_account_summary(self):
         return [AccountSummary(
             market=self.market, account_id="crypto-paper-1",
-            cash="50000", equity="82000", currency="USDT",
+            cash=str(self.cash),
+            equity=str(self.cash + self.position * self.price),
+            currency="USDT",
             reconciliation_version="v1", as_of=datetime.now(UTC),
         )]
 
@@ -107,11 +114,21 @@ class ExecutionAdapter(MarketAdapter):
         order_id = f"{self.market.value}-ord-{len(self.submitted)}"
         self._last_order_id = order_id
         self.order_status[order_id] = self.next_submit_status
+        # 成交回写：与守恒校验一致
+        qty = Decimal(str(payload.get("quantity", "0.01")))
+        if payload.get("side") == "BUY":
+            self.position += qty
+            self.cash -= qty * self.price
+        else:
+            self.position -= qty
+            self.cash += qty * self.price
         return order_id
 
     def get_order_status(self, order_id):
         status = self.order_status.get(order_id, "UNKNOWN")
         return {"order_id": order_id, "status": status,
+                "symbol": "BTCUSDT", "avg_price": str(self.price), "fees": "0",
+                "filled_at": datetime.now(UTC).isoformat(),
                 "filled_quantity": "0.005" if status == "PARTIALLY_FILLED" else "0.01"}
 
     def cancel_order(self, order_id):
@@ -498,3 +515,34 @@ def test_unknown_order_quarantine_times_out_to_incident():
     assert any("quarantine" in (i["payload"].get("reason") or "")
                for i in incidents)
     assert len(ADAPTER.submitted) == 1  # 全程没有重新提交
+
+
+def test_schema_error_after_venue_accept_does_not_resubmit(monkeypatch):
+    """venue 已接单后 order/submitted 事件因 Schema 异常抛错：
+    任务必须已持久化为 SUBMITTED（带订单号），恢复走查询路径，
+    绝不重新构建或重复提交。"""
+    from dsh_runtime.store import EventLog
+
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+
+    real_emit = EventLog.emit
+    schema_broken = {"active": True}
+
+    def broken_emit(self, event_type, *args, **kwargs):
+        if schema_broken["active"] and event_type == "order/submitted":
+            raise ValueError("simulated schema violation")
+        return real_emit(self, event_type, *args, **kwargs)
+
+    monkeypatch.setattr(EventLog, "emit", broken_emit)
+    run_once(session, agent)  # 提交成功但事件发射失败
+    schema_broken["active"] = False
+
+    # 任务已持久化 SUBMITTED 且带订单号（不依赖事件）
+    submitted_tasks = session.tasks.find_by_status("SUBMITTED", "FILLED", "DONE")
+    assert submitted_tasks and submitted_tasks[0]["order_id"]
+    assert len(ADAPTER.submitted) == 1
+
+    run_once(session, agent)  # 恢复：查询推进，不重新提交
+    assert len(ADAPTER.submitted) == 1
+    assert len(session.tasks.find_by_status("DONE")) == 1

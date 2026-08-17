@@ -18,6 +18,14 @@ from dsh_contracts import (
 
 
 class MarketAdapter(ABC):
+    # 订单查询一致性声明，决定 SUBMISSION_UNKNOWN 恢复策略：
+    # - STRONG：支持稳定 client_order_id 查询，且「查无」可强一致地判定
+    #   为「从未接受」→ 允许确认不存在后自动释放幂等键重试
+    # - EVENTUAL：查询最终一致，「查无」不能断定未接单 → 保持
+    #   SUBMISSION_UNKNOWN，转人工事故
+    # - UNSUPPORTED：不支持按幂等键查询 → 同 EVENTUAL
+    order_lookup_consistency: str = "UNSUPPORTED"
+
     @abstractmethod
     def get_health(self) -> HealthStatus: ...
 
