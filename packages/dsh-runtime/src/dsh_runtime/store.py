@@ -48,12 +48,20 @@ def _connect() -> sqlite3.Connection:
             order_id        TEXT,
             idempotency_key TEXT,
             payload         TEXT NOT NULL DEFAULT '{}',
-            created_at      TEXT NOT NULL,
-            updated_at      TEXT NOT NULL
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL,
+            reconciliation_status TEXT NOT NULL DEFAULT 'PENDING'
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_bot_status ON bot_tasks (bot, status);
         """
     )
+    # 迁移：旧库无 reconciliation_status 列时补上
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(bot_tasks)").fetchall()}
+    if "reconciliation_status" not in cols:
+        conn.execute(
+            "ALTER TABLE bot_tasks ADD COLUMN reconciliation_status TEXT"
+            " NOT NULL DEFAULT 'PENDING'"
+        )
     conn.commit()
     return conn
 

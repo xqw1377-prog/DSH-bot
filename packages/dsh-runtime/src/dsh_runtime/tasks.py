@@ -15,7 +15,10 @@ from datetime import UTC, datetime
 _TRANSITIONS: dict[str, set[str]] = {
     "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED"},
     "PREVIEWED": {"AWAITING_APPROVAL", "FAILED"},
-    "AWAITING_APPROVAL": {"APPROVED_SUBMITTING", "REJECTED", "EXPIRED", "FAILED"},
+    "AWAITING_APPROVAL": {
+        "APPROVED_SUBMITTING", "REJECTED", "EXPIRED",
+        "APPROVAL_UNKNOWN", "FAILED",
+    },
     "APPROVED_SUBMITTING": {"SUBMITTED", "FAILED"},
     # 订单生命周期（对账前均非终态）
     "SUBMITTED": {
@@ -26,20 +29,23 @@ _TRANSITIONS: dict[str, set[str]] = {
         "PARTIALLY_FILLED", "FILLED", "CANCELLED", "ORDER_REJECTED", "FAILED",
     },
     "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELLED", "FAILED"},
-    "FILLED": {"RECONCILED", "FAILED"},
-    "RECONCILED": set(),
+    # 成交与对账分离：FILLED + MATCHED → DONE；FILLED + MISMATCH → INCIDENT；
+    # 对账数据暂不可用时自环保持 FILLED（reconciliation_status=PENDING）重试
+    "FILLED": {"FILLED", "DONE", "INCIDENT", "RECONCILED", "FAILED"},
+    "RECONCILED": set(),  # 兼容旧数据
     "FAILED": set(),
     "REJECTED": set(),
     "EXPIRED": set(),
     "CANCELLED": set(),
     "ORDER_REJECTED": set(),
-    # DONE 保留兼容；新路径以 RECONCILED 为成功终态
+    "APPROVAL_UNKNOWN": set(),
+    "INCIDENT": set(),
     "DONE": set(),
 }
 
 TERMINAL = {
     "RECONCILED", "FAILED", "REJECTED", "EXPIRED",
-    "CANCELLED", "ORDER_REJECTED", "DONE",
+    "CANCELLED", "ORDER_REJECTED", "DONE", "APPROVAL_UNKNOWN", "INCIDENT",
 }
 
 
@@ -77,14 +83,16 @@ class TaskStore:
 
         row = _get().execute(
             "SELECT task_id, kind, status, subject_id, approval_id, order_id,"
-            " idempotency_key, payload, created_at, updated_at"
+            " idempotency_key, payload, created_at, updated_at,"
+            " COALESCE(reconciliation_status, 'PENDING')"
             " FROM bot_tasks WHERE task_id = ? AND bot = ?",
             (task_id, self.bot),
         ).fetchone()
         if row is None:
             return None
         keys = ("task_id", "kind", "status", "subject_id", "approval_id",
-                "order_id", "idempotency_key", "payload", "created_at", "updated_at")
+                "order_id", "idempotency_key", "payload", "created_at",
+                "updated_at", "reconciliation_status")
         task = dict(zip(keys, row))
         task["payload"] = json.loads(task["payload"])
         return task

@@ -66,13 +66,10 @@ class CryptoAgent:
             approval = self.gateway.get_approval(approval_id)
         except GatewayError as exc:
             if exc.status_code == 404:
-                # 审批已从账本消失：超时未决被网关清理（EXPIRED 路径），关闭任务
-                session.tasks.transition(task["task_id"], "EXPIRED")
-                session.events.emit(
-                    "approval/rejected", "CRYPTO", "bot", self.name,
-                    {"approval_id": approval_id, "task_id": task["task_id"],
-                     "reason": "approval expired and purged"},
-                )
+                # 404 不能无条件当作过期：也可能数据库损坏、错误 ID、权限或账本不一致。
+                # 仅当「本地记录的审批创建时间确实超过有效期」且「网关审计中存在
+                # 该审批的创建记录」时才判 EXPIRED，否则 APPROVAL_UNKNOWN 失败关闭。
+                self._handle_approval_missing(session, task)
                 return
             session.memory.remember(
                 f"任务 {task['task_id']} 审批查询失败: {exc}", kind="error",
@@ -113,6 +110,53 @@ class CryptoAgent:
                  "reason": "approval expired"},
             )
         # REQUESTED：仍在等待人工，什么都不做
+
+    APPROVAL_TTL_MINUTES = 30  # 与网关 APPROVAL_TTL 保持一致
+
+    def _handle_approval_missing(self, session: BotSession, task: dict) -> None:
+        approval_id = task["approval_id"]
+        requested_at = task["payload"].get("approval_requested_at")
+        locally_expired = bool(requested_at) and (
+            datetime.now(UTC) - datetime.fromisoformat(requested_at)
+        ) > timedelta(minutes=self.APPROVAL_TTL_MINUTES)
+
+        audited = self._approval_creation_audited(approval_id)
+
+        if locally_expired and audited:
+            session.tasks.transition(task["task_id"], "EXPIRED")
+            session.events.emit(
+                "approval/rejected", "CRYPTO", "bot", self.name,
+                {"approval_id": approval_id, "task_id": task["task_id"],
+                 "reason": "approval expired and purged (locally confirmed)"},
+            )
+            return
+
+        # 无法确认是正常过期：账本不一致或未知错误，失败关闭并开事故
+        session.tasks.transition(task["task_id"], "APPROVAL_UNKNOWN")
+        session.events.emit(
+            "incident/opened", "CRYPTO", "bot", self.name,
+            {"approval_id": approval_id, "task_id": task["task_id"],
+             "reason": "approval 404 but not locally confirmed expired",
+             "locally_expired": locally_expired, "creation_audited": audited},
+        )
+        session.memory.remember(
+            f"审批 {approval_id} 查询 404 但无法本地确认过期"
+            f"（本地过期={locally_expired}，审计存在={audited}），"
+            f"任务 APPROVAL_UNKNOWN 失败关闭，需人工核查账本",
+            kind="error", tags=[task["task_id"], "approval-unknown"],
+        )
+
+    def _approval_creation_audited(self, approval_id: str) -> bool:
+        """网关审计中是否存在该审批的创建记录（区分「从未存在」与「过期清除」）。"""
+        try:
+            audit = self.gateway._client.get("/v1/audit?limit=1000").json()
+        except Exception:
+            return False
+        return any(
+            e.get("action") == "approval.requested"
+            and f"approval_id={approval_id}" in (e.get("detail") or "")
+            for e in audit
+        )
 
     def _revalidate(self, session: BotSession, task: dict,
                      approval: dict) -> str | None:
@@ -168,16 +212,36 @@ class CryptoAgent:
         except GatewayError as exc:
             return f"cannot re-preview: {exc}"
         fresh_risk = fresh.get("risk", {})
-        for field in ("worst_case_loss", "risk_budget_delta", "position_after"):
+        boundary = signal.get("risk_boundary") or {}
+        if not boundary:
+            return "task payload missing approved risk boundary"
+        # 边界校验：重新计算的指标不得超过审批绑定的边界；变得更安全则放行。
+        # 行情随时在变，要求「数值完全一致」会把正常订单也拦下来。
+        ceiling_checks = [
+            ("worst_case_loss", fresh_risk.get("worst_case_loss"),
+             boundary.get("max_worst_case_loss")),
+            ("notional", fresh_risk.get("risk_budget_delta"),
+             boundary.get("max_notional")),
+            ("slippage", fresh.get("estimated_slippage"),
+             boundary.get("max_slippage")),
+        ]
+        for name, fresh_value, ceiling in ceiling_checks:
+            if fresh_value is None or ceiling is None:
+                return f"risk boundary incomplete: {name}"
             try:
-                left = Decimal(str(fresh_risk.get(field)))
-                right = Decimal(str(signal.get(field)))
+                exceeded = Decimal(str(fresh_value)) > Decimal(str(ceiling))
             except Exception:
-                return (f"risk snapshot changed: {field} "
-                        f"{signal.get(field)} -> {fresh_risk.get(field)}")
-            if left != right:
-                return (f"risk snapshot changed: {field} "
-                        f"{signal.get(field)} -> {fresh_risk.get(field)}")
+                return f"risk boundary not numeric: {name}"
+            if exceeded:
+                return (f"risk exceeds approved boundary: {name} "
+                        f"{fresh_value} > {ceiling}")
+        try:
+            if Decimal(str(fresh_risk.get("position_after", "0"))) > Decimal(
+                    boundary.get("max_quantity", "0")):
+                return (f"position_after exceeds approved max_quantity "
+                        f"{boundary.get('max_quantity')}")
+        except Exception:
+            return "risk boundary max_quantity not numeric"
         return None
 
     def _submit(self, session: BotSession, task: dict) -> None:
@@ -357,6 +421,8 @@ class CryptoAgent:
             session.use("query_accounts")
             accounts = self.gateway.get_account_summary(Market.CRYPTO)
         except GatewayError as exc:
+            session.tasks.transition(task["task_id"], "FILLED",
+                                     reconciliation_status="PENDING")
             session.memory.remember(
                 f"订单 {order_id} 对账数据获取失败（保持 FILLED 待重试）: {exc}",
                 kind="error", tags=[task["task_id"]],
@@ -364,26 +430,41 @@ class CryptoAgent:
             return
         match = next((p for p in positions if p["symbol"] == symbol), None)
         if match is None or Decimal(str(match["quantity"])) < expected:
+            # execution_status=FILLED 但 reconciliation_status=MISMATCH：
+            # 订单成交与账户状态不一致，开事故交人工处理
+            session.tasks.transition(task["task_id"], "INCIDENT",
+                                     reconciliation_status="MISMATCH")
             session.events.emit(
                 "account/mismatch", "CRYPTO", "bot", self.name,
                 {"task_id": task["task_id"], "order_id": order_id,
+                 "execution_status": "FILLED",
+                 "reconciliation_status": "MISMATCH",
                  "expected_quantity": str(expected),
                  "positions_quantity": str(match["quantity"]) if match else None},
             )
+            session.events.emit(
+                "incident/opened", "CRYPTO", "bot", self.name,
+                {"task_id": task["task_id"], "order_id": order_id,
+                 "reason": "fill/position mismatch after FILLED"},
+            )
             session.memory.remember(
                 f"对账异常：订单 {order_id} 成交 {expected} 但持仓不足，"
-                f"任务保持 FILLED 等待人工核查",
+                f"已开事故等待人工处理",
                 kind="error", tags=[task["task_id"], "reconcile-mismatch"],
             )
             return
         session.events.emit(
             "account/reconciled", "CRYPTO", "bot", self.name,
             {"task_id": task["task_id"], "order_id": order_id,
+             "execution_status": "FILLED",
+             "reconciliation_status": "MATCHED",
              "symbol": symbol, "quantity": str(expected),
              "positions_quantity": str(match["quantity"]),
              "equity": str(accounts[0]["equity"]) if accounts else None},
         )
-        session.tasks.transition(task["task_id"], "RECONCILED")
+        # execution_status=FILLED + reconciliation_status=MATCHED → 任务终态 DONE
+        session.tasks.transition(task["task_id"], "DONE",
+                                 reconciliation_status="MATCHED")
         session.memory.remember(
             f"订单 {order_id} 对账通过（{symbol} {expected}），任务完成",
             kind="order-reconciled", tags=[task["task_id"], order_id],
@@ -481,6 +562,18 @@ class CryptoAgent:
             worst_case_loss=str(risk.get("worst_case_loss", "0")),
             quantity=str(intent.quantity),
             idempotency_key=new_idempotency_key("crypto-paper"),
+            # 审批绑定的执行边界：人工批准的是这个边界内的执行；
+            # 执行前重新计算，超出边界拦截，变得更安全则允许继续
+            risk_boundary={
+                "max_quantity": str(intent.quantity),
+                "max_notional": str(risk.get("risk_budget_delta", "0")),
+                "max_worst_case_loss": str(risk.get("worst_case_loss", "0")),
+                "max_slippage": str(preview.get("estimated_slippage", "0")),
+                "strategy_version": signal["strategy_version"],
+                "account_id": self.account_id,
+                "market": "CRYPTO",
+                "signal_id": signal["signal_id"],
+            },
         )
         from dsh_runtime.store import _get
         import json as _json
@@ -514,6 +607,18 @@ class CryptoAgent:
                 tags=[f"signal:{signal['signal_id']}"],
             )
             return None
+        # 本地记录审批创建时间：404 时用于区分「确认过期」与「账本异常」
+        task_row = session.tasks.get(task_id)
+        payload = dict(task_row["payload"])
+        payload["approval_requested_at"] = datetime.now(UTC).isoformat()
+        from dsh_runtime.store import _get
+        import json as _json
+        _get().execute(
+            "UPDATE bot_tasks SET payload = ?, updated_at = ? WHERE task_id = ?",
+            (_json.dumps(payload, ensure_ascii=False),
+             datetime.now(UTC).isoformat(), task_id),
+        )
+        _get().commit()
         session.events.emit(
             "approval/requested", "CRYPTO", "bot", self.name,
             {
