@@ -36,6 +36,18 @@ class MarketChiefAgent:
     def _incident_center_url() -> str:
         return os.environ.get("INCIDENT_CENTER_URL", "")
 
+    # Runtime 事件 reason（自由文本）→ 确定性规则 ID。
+    # 指纹用 incident_type，reason 措辞变化不产生新事故。
+    INCIDENT_RULES = {
+        "order UNKNOWN beyond quarantine": "order_unknown_quarantine",
+        "fill/position mismatch after FILLED": "fill_position_mismatch",
+        "approval 404 but not locally confirmed expired":
+            "approval_ledger_unknown",
+        "degraded markets": "market_degraded",
+        "market degraded or unreachable": "market_degraded",
+        "reconciliation numeric inconsistency": "reconcile_numeric_mismatch",
+    }
+
     def _forward_open_incidents(self, session: BotSession) -> None:
         """把 Runtime 账本中未决的 incident/opened 转发到事故中心。
 
@@ -48,26 +60,32 @@ class MarketChiefAgent:
         try:
             conn = _runtime_conn()
             rows = conn.execute(
-                "SELECT actor_id, market, payload FROM domain_events"
+                "SELECT event_id, actor_id, market, payload FROM domain_events"
                 " WHERE event_type = 'incident/opened'"
                 " ORDER BY occurred_at DESC LIMIT 50",
             ).fetchall()
         except Exception:
             return
         import json as _json
-        for actor_id, market, payload in rows:
+        for event_id, actor_id, market, payload in rows:
             data = _json.loads(payload)
+            reason = data.get("reason") or ""
             try:
                 httpx.post(
                     url.rstrip("/") + "/v1/incidents",
                     json={
                         "source": actor_id,
-                        "reason": data.get("reason", "unspecified"),
+                        "incident_type": self.INCIDENT_RULES.get(
+                            reason, "uncategorized"),
+                        "reason": reason or None,
                         "subject": data.get("order_id")
+                                   or data.get("candidate_id")
                                    or data.get("task_id"),
                         "market": market if market != "GLOBAL" else None,
-                        "severity": "HIGH" if "order" in (data.get("reason")
-                                                          or "") else "NORMAL",
+                        "severity": "HIGH" if "order" in reason
+                                    or "mismatch" in reason else "NORMAL",
+                        # 消息级幂等：Runtime 事件 ID，重复转发被中心忽略
+                        "source_event_id": event_id,
                     }, timeout=3.0,
                 )
             except httpx.HTTPError as exc:
