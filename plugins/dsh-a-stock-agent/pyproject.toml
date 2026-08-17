@@ -1,0 +1,13 @@
+[project]
+name = "dsh-a-stock-agent"
+version = "0.1.0"
+description = "A股专业 Bot：执行闭环复用 TradeExecutionCore，市场规则由 AStockMarketPolicy 注入"
+requires-python = ">=3.12"
+dependencies = ["dsh-trade-core", "dsh-gateway-client", "dsh-trade-approval", "dsh-runtime"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

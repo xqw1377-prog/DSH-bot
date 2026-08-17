@@ -1,0 +1,13 @@
+[project]
+name = "dsh-trade-core"
+version = "0.1.0"
+description = "共享交易执行核心：审批→再校验→提交→成交→对账 全流程单版本；市场差异由 MarketPolicy 注入"
+requires-python = ">=3.12"
+dependencies = ["dsh-gateway-client", "dsh-trade-approval", "dsh-runtime", "dsh-contracts"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
