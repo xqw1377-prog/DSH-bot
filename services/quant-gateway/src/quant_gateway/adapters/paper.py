@@ -189,6 +189,13 @@ class PaperAdapter(MarketAdapter):
             self._cash += quantity * avg_price
         return order_id
 
+    def find_order_by_idempotency_key(self, key: str) -> dict | None:
+        # Paper 同步落库：按幂等键能查到即已接单；查不到即确定从未接受
+        found = find_paper_order_by_idempotency_key(key)
+        if found is not None:
+            return dict(found)
+        return None
+
     def get_order_status(self, order_id: str) -> dict:
         if order_id in self._orders:
             return dict(self._orders[order_id])

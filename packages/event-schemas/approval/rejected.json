@@ -4,9 +4,7 @@
   "title": "ApprovalRejected",
   "type": "object",
   "required": [
-    "approval_id",
-    "decided_by",
-    "decided_at"
+    "approval_id"
   ],
   "properties": {
     "approval_id": {

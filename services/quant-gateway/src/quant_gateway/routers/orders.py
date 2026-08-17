@@ -24,6 +24,19 @@ from quant_gateway.auth import Principal, require_write
 
 router = APIRouter(dependencies=[Depends(require_write)])
 
+# RESERVED 无 order_id 的在途宽限：窗口内视为并发在途，不做恢复判定
+SUBMISSION_UNKNOWN_GRACE_SECONDS = 30.0
+
+
+def _idempotency_age_seconds(updated_at: str | None) -> float | None:
+    from datetime import UTC, datetime
+    if not updated_at:
+        return None
+    try:
+        return (datetime.now(UTC) - datetime.fromisoformat(updated_at)).total_seconds()
+    except ValueError:
+        return None
+
 RISK_POLICY_URL = os.environ.get("RISK_POLICY_URL", "http://127.0.0.1:8003")
 
 def register_risk_snapshot(snapshot: RiskSnapshot) -> None:
@@ -96,13 +109,50 @@ def request_order(market: Market, intent: dict,
                     "rejected"
                 ),
             )
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "duplicate idempotency key; no new order created; "
-                f"previous order_id={previous_order_id or '(in flight)'}"
-            ),
-        )
+        if previous_order_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "duplicate idempotency key; no new order created; "
+                    f"previous order_id={previous_order_id}"
+                ),
+            )
+        # SUBMISSION_UNKNOWN：venue 可能已接单但网关在写库前崩溃。
+        # 仅当键已老化（超过在途窗口）才做恢复：新鲜的 RESERVED 属于并发在途，
+        # venue 查不到不代表未接单。恢复顺序：找到即认领；明确不存在才释放重试。
+        record = storage.get_idempotency_record(idempotency_key) or {}
+        age_seconds = _idempotency_age_seconds(record.get("updated_at"))
+        if age_seconds is None or age_seconds < SUBMISSION_UNKNOWN_GRACE_SECONDS:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "idempotency key in flight (RESERVED without order_id); "
+                    "retry after grace period"
+                ),
+            )
+        recovered = adapter.find_order_by_idempotency_key(idempotency_key)
+        if recovered is not None and recovered.get("order_id"):
+            recovered_id = recovered["order_id"]
+            storage.finalize_idempotency_key(idempotency_key, recovered_id)
+            audit.record(
+                "order.submission_recovered", principal.name, market.value,
+                recovered_id,
+                detail=f"intent={idempotency_key} recovered from venue",
+            )
+            return {"order_id": recovered_id, "status": "SUBMITTED",
+                    "recovered": True}
+        if recovered is None:
+            # venue 确认从未接受：释放幂等键，本次请求按新单继续走完整门禁
+            storage.mark_idempotency_failed(idempotency_key)
+        else:
+            # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "submission unknown: idempotency key occupied without "
+                    "order_id; venue lookup inconclusive; resubmission blocked"
+                ),
+            )
 
     # 3. 风险快照（失败关闭：查不到快照即拒绝）
     raw = storage.get_risk_snapshot(order_intent.risk_snapshot_id)

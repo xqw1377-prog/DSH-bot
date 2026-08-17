@@ -3,7 +3,7 @@ name = "dsh-runtime"
 version = "0.1.0"
 description = "DSH 底座最小运行时：Session、Profile 加载、记忆、事件与定时调度"
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6"]
+dependencies = ["pyyaml>=6", "jsonschema>=4"]
 
 [build-system]
 requires = ["setuptools>=68"]

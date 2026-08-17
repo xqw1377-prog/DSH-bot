@@ -40,6 +40,14 @@ class MarketAdapter(ABC):
     @abstractmethod
     def get_order_status(self, order_id: str) -> dict: ...
 
+    def find_order_by_idempotency_key(self, key: str) -> dict | None:
+        """按幂等键查询交易系统是否已接受该订单（SUBMISSION_UNKNOWN 恢复）。
+
+        返回订单记录表示 venue 已接单（认领）；返回 None 必须表示
+        「确定从未接受」——不确定时实现应抛异常（失败关闭）。
+        """
+        return None
+
     @abstractmethod
     def cancel_order(self, order_id: str) -> dict: ...
 

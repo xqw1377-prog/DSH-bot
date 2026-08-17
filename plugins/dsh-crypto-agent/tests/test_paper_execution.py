@@ -95,10 +95,17 @@ class ExecutionAdapter(MarketAdapter):
             ),
         ).model_dump(mode="json")
 
+    def find_order_by_idempotency_key(self, key):
+        for payload in self.submitted:
+            if payload.get("idempotency_key") == key:
+                return {"order_id": self._last_order_id}
+        return None
+
     def request_order(self, intent):
         payload = intent if isinstance(intent, dict) else intent.model_dump(mode="json")
         self.submitted.append(payload)
         order_id = f"{self.market.value}-ord-{len(self.submitted)}"
+        self._last_order_id = order_id
         self.order_status[order_id] = self.next_submit_status
         return order_id
 
@@ -171,6 +178,13 @@ def test_approved_executes_exactly_once():
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1
     assert len(session.tasks.find_by_status("DONE")) == 1
+    # 对账明细完整性：数量/均价/手续费/现金/可用冻结/对账时间
+    rec = session.events.query("account/reconciled")[0]["payload"]
+    for field in ("filled_quantity", "avg_price", "fees", "cash", "equity",
+                  "available_quantity", "frozen_quantity", "positions_quantity",
+                  "reconciled_at", "reconciliation_version"):
+        assert field in rec, f"reconciliation missing {field}"
+    assert rec["reconciliation_status"] == "MATCHED"
 
 
 # ---- 2. 拒绝和审批超时不执行 ----
@@ -266,7 +280,7 @@ def test_stale_signal_not_executed_even_if_approved():
     conn.commit()
     run_once(session, agent)
     assert ADAPTER.submitted == []
-    failed = session.tasks.find_by_status("FAILED")
+    failed = session.tasks.find_by_status("PRE_SUBMIT_FAILED")
     assert len(failed) == 1
     assert "expired" in failed[0].get("payload", {}).get("valid_until", "") or True
 
@@ -372,7 +386,7 @@ def test_tampered_approval_fails_closed():
         conn.commit()
     run_once(session, agent)
     assert ADAPTER.submitted == []
-    assert len(session.tasks.find_by_status("FAILED")) == 1
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_FAILED")) == 1
 
 
 def test_risk_exceeding_approved_boundary_fails_closed():
@@ -382,7 +396,7 @@ def test_risk_exceeding_approved_boundary_fails_closed():
     ADAPTER.risk_scale = Decimal("2")
     run_once(session, agent)
     assert ADAPTER.submitted == []
-    assert len(session.tasks.find_by_status("FAILED")) == 1
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_FAILED")) == 1
 
 
 def test_risk_getting_safer_still_executes():
@@ -410,4 +424,77 @@ def test_boundary_tamper_fails_closed():
     conn.commit()
     run_once(session, agent)
     assert ADAPTER.submitted == []
-    assert len(session.tasks.find_by_status("FAILED")) == 1
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_FAILED")) == 1
+
+
+def test_agent_submit_crash_recovers_via_idempotency_lookup():
+    """提交后网关崩溃（500）：任务 SUBMISSION_UNKNOWN，下个 tick 经幂等键
+    查询认领同一订单，绝不重复提交。"""
+    from fastapi.testclient import TestClient as TC
+    from quant_gateway.main import app as gw_app
+
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+
+    # venue 接单后、网关落库前崩溃：适配器记录订单但 request_order 抛错
+    real_request = ADAPTER.request_order
+
+    def crash_after_accept(intent):
+        result = real_request(intent)
+        raise RuntimeError("gateway crashed after venue accept")
+
+    ADAPTER.request_order = crash_after_accept
+    crash_client = TC(gw_app, raise_server_exceptions=False)
+    gateway_backup = agent.gateway._client
+    agent.gateway._client = crash_client
+    run_once(session, agent)
+    agent.gateway._client = gateway_backup
+    ADAPTER.request_order = real_request
+
+    unknown = session.tasks.find_by_status("SUBMISSION_UNKNOWN")[0]
+    assert len(ADAPTER.submitted) == 1  # venue 已接受一笔
+
+    # 越过网关恢复宽限窗口（模拟时间流逝）
+    from quant_gateway import storage as gw_storage
+    with gw_storage.locked_conn() as conn:
+        conn.execute(
+            "UPDATE idempotency_keys SET updated_at = ? WHERE key = ?",
+            ("2020-01-01T00:00:00Z", unknown["idempotency_key"]),
+        )
+        conn.commit()
+
+    run_once(session, agent)  # 恢复 tick：认领同一订单
+    assert len(ADAPTER.submitted) == 1  # 没有第二笔
+    assert len(session.tasks.find_by_status("DONE")) == 1
+    done = session.tasks.find_by_status("DONE")[0]
+    assert done["order_id"]  # 认领到了 venue 的订单
+
+
+def test_unknown_order_quarantine_times_out_to_incident():
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    ADAPTER.next_submit_status = "UNKNOWN"
+    run_once(session, agent)  # 提交后 venue 返回 UNKNOWN
+    task = session.tasks.find_by_status("SUBMITTED")[0]
+    assert task, "UNKNOWN 应保持在途 SUBMITTED，不重新提交"
+
+    run_once(session, agent)  # 首次 UNKNOWN：记录隔离起点
+    # 老化隔离起点，越过 600s 时限
+    from dsh_runtime.store import _get
+    payload = dict(task["payload"])
+    payload["unknown_since"] = (
+        datetime.now(UTC) - timedelta(seconds=3600)
+    ).isoformat()
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET payload = ? WHERE task_id = ?",
+        (json.dumps(payload), task["task_id"]),
+    )
+    conn.commit()
+
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("INCIDENT")) == 1
+    incidents = session.events.query("incident/opened")
+    assert any("quarantine" in (i["payload"].get("reason") or "")
+               for i in incidents)
+    assert len(ADAPTER.submitted) == 1  # 全程没有重新提交

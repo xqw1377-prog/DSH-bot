@@ -8,6 +8,7 @@ DSH Session 不能成为唯一交易账本（设计红线），但 Agent 的事�
 import json
 import os
 import sqlite3
+from pathlib import Path
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -129,10 +130,46 @@ class Memory:
 
 
 class EventLog:
-    """领域事件日志，字段与 packages/event-schemas/envelope.json 对齐。"""
+    """领域事件日志，字段与 packages/event-schemas/envelope.json 对齐。
+
+    若事件类型存在 payload schema（packages/event-schemas/<type>.json），
+    发射前用 JSON Schema 校验：payload 与契约不符立即失败，
+    而不是让坏事件流进账本。"""
+    _validator_cache: dict[str, object] = {}
+
+    @classmethod
+    def _schema_dir(cls):
+        # store.py 位于 <root>/packages/dsh-runtime/src/dsh_runtime/，
+        # parents[3] 即 <root>/packages
+        return Path(__file__).resolve().parents[3] / "event-schemas"
+
+    @classmethod
+    def _validator_for(cls, event_type: str):
+        if event_type in cls._validator_cache:
+            return cls._validator_cache[event_type]
+        schema_file = cls._schema_dir() / f"{event_type}.json"
+        validator = None
+        if schema_file.exists():
+            try:
+                from jsonschema import Draft202012Validator
+                validator = Draft202012Validator(
+                    json.loads(schema_file.read_text())
+                )
+            except ImportError:
+                validator = None
+        cls._validator_cache[event_type] = validator
+        return validator
 
     def emit(self, event_type: str, market: str, actor_kind: str, actor_id: str,
              payload: dict) -> str:
+        validator = self._validator_for(event_type)
+        if validator is not None:
+            errors = sorted(validator.iter_errors(payload), key=str)
+            if errors:
+                raise ValueError(
+                    f"event {event_type} payload violates schema: "
+                    f"{errors[0].message}"
+                )
         event_id = str(uuid4())
         _get().execute(
             "INSERT INTO domain_events VALUES (?, ?, ?, ?, ?, ?, ?)",

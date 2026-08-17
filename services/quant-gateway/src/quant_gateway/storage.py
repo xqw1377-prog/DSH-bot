@@ -291,12 +291,14 @@ def get_idempotency_entry(key: str) -> tuple[str | None, str] | None:
 def get_idempotency_record(key: str) -> dict[str, Any] | None:
     with locked_conn() as conn:
         row = conn.execute(
-            "SELECT order_id, request_hash, status FROM idempotency_keys WHERE key = ?",
+            "SELECT order_id, request_hash, status, updated_at"
+            " FROM idempotency_keys WHERE key = ?",
             (key,),
         ).fetchone()
     if row is None:
         return None
-    return {"order_id": row[0], "request_hash": row[1], "status": row[2]}
+    return {"order_id": row[0], "request_hash": row[1],
+            "status": row[2], "updated_at": row[3]}
 
 
 def get_order_id_for_key(key: str) -> str | None:

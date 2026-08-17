@@ -31,6 +31,9 @@ from dsh_trade_approval import ApprovalWorkflow
 class CryptoAgent:
     name = "crypto-bot"
 
+    # 订单 UNKNOWN 隔离时限：持续查询超过该时限仍未知 → 开事故
+    UNKNOWN_QUARANTINE_SECONDS = 600.0
+
     def __init__(
         self,
         gateway: GatewayClient,
@@ -53,7 +56,7 @@ class CryptoAgent:
 
     def _resume_pending_tasks(self, session: BotSession) -> None:
         for task in session.tasks.find_by_status(
-            "AWAITING_APPROVAL", "APPROVED_SUBMITTING"
+            "AWAITING_APPROVAL", "APPROVED_SUBMITTING", "SUBMISSION_UNKNOWN"
         ):
             self._advance_awaiting(session, task)
         for task in session.tasks.find_by_status("SUBMITTED"):
@@ -83,7 +86,7 @@ class CryptoAgent:
                 # 执行前再校验：审批绑定、信号时效、风险一致性
                 problem = self._revalidate(session, task, approval)
                 if problem is not None:
-                    session.tasks.transition(task["task_id"], "FAILED")
+                    session.tasks.transition(task["task_id"], "PRE_SUBMIT_FAILED")
                     session.events.emit(
                         "order/unknown", "CRYPTO", "bot", self.name,
                         {"task_id": task["task_id"], "rejected_at_submit": problem},
@@ -246,6 +249,13 @@ class CryptoAgent:
 
     def _submit(self, session: BotSession, task: dict) -> None:
         signal = task["payload"]
+        # 订单意图只构建一次并持久化：重试必须原样复用，任何字段漂移
+        # （如 valid_until 重算）都会导致网关请求体哈希冲突
+        persisted = signal.get("order_intent")
+        if persisted:
+            intent = OrderIntent.model_validate(persisted)
+            self._dispatch_submit(session, task, intent)
+            return
         intent = OrderIntent(
             idempotency_key=task["idempotency_key"],
             market=Market.CRYPTO,
@@ -260,6 +270,21 @@ class CryptoAgent:
             risk_snapshot_id=signal["risk_snapshot_id"],
             approval_id=task["approval_id"],
         )
+        payload = dict(signal)
+        payload["order_intent"] = intent.model_dump(mode="json")
+        from dsh_runtime.store import _get
+        import json as _json
+        conn = _get()
+        conn.execute(
+            "UPDATE bot_tasks SET payload = ? WHERE task_id = ?",
+            (_json.dumps(payload, ensure_ascii=False), task["task_id"]),
+        )
+        conn.commit()
+        self._dispatch_submit(session, task, intent)
+
+    def _dispatch_submit(self, session: BotSession, task: dict,
+                         intent: OrderIntent) -> None:
+        signal = task["payload"]
         try:
             session.use("submit_order")
             # 复用预览产生的风险快照：正式提交时网关按此查验并二次硬风控
@@ -281,7 +306,13 @@ class CryptoAgent:
                 # 认领既有订单进入状态轮询，绝不重新下单
                 self._adopt_existing_order(session, task)
                 return
-            session.tasks.transition(task["task_id"], "FAILED")
+            # 提交结果未知（网络/5xx）：SUBMISSION_UNKNOWN，禁止盲目重试
+            session.tasks.transition(task["task_id"], "SUBMISSION_UNKNOWN")
+            session.events.emit(
+                "order/unknown", "CRYPTO", "bot", self.name,
+                {"task_id": task["task_id"], "idempotency_key": task["idempotency_key"],
+                 "error": str(exc)},
+            )
             session.events.emit(
                 "order/unknown", "CRYPTO", "bot", self.name,
                 {"task_id": task["task_id"], "error": str(exc)},
@@ -321,10 +352,13 @@ class CryptoAgent:
         )
         order_id = resp.json().get("order_id") if resp.status_code == 200 else None
         if not order_id:
-            session.tasks.transition(task["task_id"], "FAILED")
+            # 在途或查询无果：保持 SUBMISSION_UNKNOWN，下个 tick 继续查询，
+            # 绝不重新提交
+            session.tasks.transition(task["task_id"], "SUBMISSION_UNKNOWN")
             session.memory.remember(
-                f"任务 {task['task_id']} 幂等冲突但查不到既有订单，标记失败",
-                kind="error", tags=[task["task_id"]],
+                f"任务 {task['task_id']} 幂等键占用但暂无订单（在途/恢复窗口），"
+                f"保持查询恢复",
+                kind="order-unknown", tags=[task["task_id"]],
             )
             return
         session.tasks.transition(task["task_id"], "SUBMITTED", order_id=order_id)
@@ -353,7 +387,9 @@ class CryptoAgent:
             session.tasks.transition(task["task_id"], "CANCELLED")
             session.events.emit(
                 "order/cancelled", "CRYPTO", "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id},
+                {"task_id": task["task_id"], "order_id": order_id,
+                 "market": "CRYPTO",
+                 "cancelled_at": datetime.now(UTC).isoformat()},
             )
             return
         if order_status == "REJECTED":
@@ -369,16 +405,51 @@ class CryptoAgent:
             session.events.emit(
                 "order/filled", "CRYPTO", "bot", self.name,
                 {"task_id": task["task_id"], "order_id": order_id,
+                 "market": "CRYPTO",
+                 "symbol": status.get("symbol")
+                           or task["payload"].get("symbol"),
                  "partial": True,
-                 "filled_quantity": str(status.get("filled_quantity") or "0")},
+                 "filled_quantity": str(status.get("filled_quantity") or "0"),
+                 "avg_price": str(status.get("avg_price") or "0"),
+                 "filled_at": status.get("filled_at")
+                              or datetime.now(UTC).isoformat()},
             )
             return  # 继续轮询直至 FILLED 或人工撤单
         if order_status == "UNKNOWN":
-            # 未知状态：只查询，绝不重新提交；保持任务在途继续对账
-            session.memory.remember(
-                f"订单 {order_id} 状态 UNKNOWN，保持查询恢复（不重新提交）",
-                kind="order-unknown", tags=[task["task_id"], order_id],
-            )
+            # 未知状态是「隔离中的非成功状态」：禁止重提、持续查询；
+            # 超过时限仍未知则开事故等待人工处理
+            unknown_since = task["payload"].get("unknown_since")
+            if not unknown_since:
+                payload = dict(task["payload"])
+                payload["unknown_since"] = datetime.now(UTC).isoformat()
+                from dsh_runtime.store import _get
+                import json as _json
+                conn = _get()
+                conn.execute(
+                    "UPDATE bot_tasks SET payload = ? WHERE task_id = ?",
+                    (_json.dumps(payload, ensure_ascii=False), task["task_id"]),
+                )
+                conn.commit()
+                session.memory.remember(
+                    f"订单 {order_id} 状态 UNKNOWN，进入隔离查询（不重新提交）",
+                    kind="order-unknown", tags=[task["task_id"], order_id],
+                )
+                return
+            elapsed = (datetime.now(UTC)
+                       - datetime.fromisoformat(unknown_since)).total_seconds()
+            if elapsed > self.UNKNOWN_QUARANTINE_SECONDS:
+                session.tasks.transition(task["task_id"], "INCIDENT")
+                session.events.emit(
+                    "incident/opened", "CRYPTO", "bot", self.name,
+                    {"task_id": task["task_id"], "order_id": order_id,
+                     "reason": "order UNKNOWN beyond quarantine window",
+                     "unknown_since": unknown_since},
+                )
+                session.memory.remember(
+                    f"订单 {order_id} UNKNOWN 超过 {self.UNKNOWN_QUARANTINE_SECONDS}s，"
+                    f"已开事故等待人工处理",
+                    kind="error", tags=[task["task_id"], order_id],
+                )
             return
         if order_status != "FILLED":
             return
@@ -409,11 +480,14 @@ class CryptoAgent:
         self._reconcile_account(session, task)
 
     def _reconcile_account(self, session: BotSession, task: dict) -> None:
-        """账户对账：核对持仓与账户，通过后任务才能到达终态 RECONCILED。"""
+        """完整账户对账：成交数量与均价、手续费、现金、可用/冻结余额、
+        持仓、订单累计成交量、对账时间。全部一致才 MATCHED → DONE。"""
         order_id = task["order_id"]
         expected = Decimal(str(task["payload"].get("quantity", "0.01")))
         symbol = task["payload"]["symbol"]
         try:
+            session.use("query_order_status")
+            venue_order = self.gateway.get_order_status(Market.CRYPTO, order_id)
             session.use("query_positions")
             positions = self.gateway.get_positions(
                 Market.CRYPTO, account_id=self.account_id
@@ -453,14 +527,42 @@ class CryptoAgent:
                 kind="error", tags=[task["task_id"], "reconcile-mismatch"],
             )
             return
+        filled_qty = Decimal(str(venue_order.get("filled_quantity", expected)))
+        # 对账明细：成交数量与均价、手续费、现金、可用/冻结、持仓、
+        # 订单累计成交量与对账时间（数据版本用 venue 的 filled_at/as_of）
+        reconciliation = {
+            "task_id": task["task_id"], "order_id": order_id,
+            "execution_status": "FILLED",
+            "reconciliation_status": "MATCHED",
+            "symbol": symbol,
+            "quantity": str(expected),
+            "filled_quantity": str(filled_qty),
+            "avg_price": str(venue_order.get("avg_price")),
+            "fees": str(venue_order.get("fees", "0")),
+            "positions_quantity": str(match["quantity"]),
+            "available_quantity": str(match["available_quantity"]),
+            "frozen_quantity": str(match.get("frozen_quantity", "0")),
+            "cash": str(accounts[0]["cash"]) if accounts else None,
+            "equity": str(accounts[0]["equity"]) if accounts else None,
+            "reconciliation_version": (
+                accounts[0].get("reconciliation_version") if accounts else None
+            ),
+            "reconciled_at": datetime.now(UTC).isoformat(),
+            "venue_as_of": str(venue_order.get("filled_at")
+                               or venue_order.get("as_of")),
+        }
+        # 数量一致性：成交数量应覆盖委托数量，持仓应包含成交
+        if filled_qty < expected:
+            reconciliation["reconciliation_status"] = "MISMATCH"
+            session.tasks.transition(task["task_id"], "INCIDENT",
+                                     reconciliation_status="MISMATCH")
+            reconciliation["reason"] = (
+                f"filled {filled_qty} < ordered {expected}")
+            session.events.emit(
+                "account/mismatch", "CRYPTO", "bot", self.name, reconciliation)
+            return
         session.events.emit(
-            "account/reconciled", "CRYPTO", "bot", self.name,
-            {"task_id": task["task_id"], "order_id": order_id,
-             "execution_status": "FILLED",
-             "reconciliation_status": "MATCHED",
-             "symbol": symbol, "quantity": str(expected),
-             "positions_quantity": str(match["quantity"]),
-             "equity": str(accounts[0]["equity"]) if accounts else None},
+            "account/reconciled", "CRYPTO", "bot", self.name, reconciliation,
         )
         # execution_status=FILLED + reconciliation_status=MATCHED → 任务终态 DONE
         session.tasks.transition(task["task_id"], "DONE",
@@ -544,7 +646,7 @@ class CryptoAgent:
         try:
             preview = self.gateway.preview_order(intent)
         except GatewayError as exc:
-            session.tasks.transition(task_id, "FAILED")
+            session.tasks.transition(task_id, "PRE_SUBMIT_FAILED")
             session.memory.remember(
                 f"订单预览失败（{signal['signal_id']}）: {exc}", kind="error",
                 tags=["preview-failed", f"signal:{signal['signal_id']}"],
@@ -601,7 +703,7 @@ class CryptoAgent:
                 ],
             )
         except Exception as exc:
-            session.tasks.transition(task_id, "FAILED")
+            session.tasks.transition(task_id, "PRE_SUBMIT_FAILED")
             session.memory.remember(
                 f"审批请求失败（{signal['signal_id']}）: {exc}", kind="error",
                 tags=[f"signal:{signal['signal_id']}"],
@@ -623,9 +725,11 @@ class CryptoAgent:
             "approval/requested", "CRYPTO", "bot", self.name,
             {
                 "approval_id": approval_id,
+                "market": "CRYPTO",
                 "requested_by_bot": self.name,
                 "subject_type": "order",
                 "subject_id": signal["signal_id"],
+                "requested_at": datetime.now(UTC).isoformat(),
                 "task_id": task_id,
                 "evidence_refs": [
                     f"signal:{signal['signal_id']}",
