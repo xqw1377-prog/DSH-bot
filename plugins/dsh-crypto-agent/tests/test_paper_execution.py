@@ -540,6 +540,54 @@ def test_stale_position_without_cash_move_opens_incident():
     assert mismatch[0]["payload"]["reconciliation_status"] == "MISMATCH"
 
 
+def test_submission_unknown_quarantine_times_out_to_incident():
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    from dsh_runtime.store import _get
+    from datetime import UTC, datetime, timedelta
+    import json as _json
+
+    task = session.tasks.find_by_status("AWAITING_APPROVAL") or \
+        session.tasks.find_by_status("APPROVED_SUBMITTING") or \
+        session.tasks.find_by_status("DONE")
+    task = task[0]
+    payload = dict(task["payload"])
+    payload["submission_unknown_since"] = (
+        datetime.now(UTC) - timedelta(seconds=3600)
+    ).isoformat()
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET status = 'SUBMISSION_UNKNOWN', payload = ? "
+        "WHERE task_id = ?",
+        (_json.dumps(payload), task["task_id"]),
+    )
+    conn.commit()
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("INCIDENT")) == 1
+    assert ADAPTER.submitted == []
+    incidents = session.events.query("incident/opened")
+    assert any("submission UNKNOWN" in (i["payload"].get("reason") or "")
+               for i in incidents)
+
+
+def test_filled_pending_reconcile_resumes_on_next_tick():
+    """崩溃停在 FILLED 时，下个 tick 必须继续对账，不得重下。"""
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+    assert len(session.tasks.find_by_status("DONE")) == 1
+    from dsh_runtime.store import _get
+    conn = _get()
+    conn.execute(
+        "UPDATE bot_tasks SET status = 'FILLED', reconciliation_status = 'PENDING'"
+        " WHERE task_id LIKE '%sig-x'"
+    )
+    conn.commit()
+    run_once(session, agent)
+    assert len(ADAPTER.submitted) == 1
+    assert len(session.tasks.find_by_status("DONE")) == 1
+
+
 def test_shadow_mode_never_submits():
     agent, session = _agent_and_session()
     agent.mode = "shadow"
@@ -547,3 +595,37 @@ def test_shadow_mode_never_submits():
     assert ADAPTER.submitted == []
     assert client.get("/v1/approvals").json() == []
     assert len(session.tasks.find_by_status("SHADOW_RECORDED")) == 1
+
+
+def test_live_mode_rejected_at_construction():
+    from dsh_crypto_agent import CryptoAgent
+
+    with pytest.raises(ValueError, match="live mode is disabled"):
+        CryptoAgent(
+            gateway=object(), approvals=object(), account_id="x", mode="live"
+        )
+
+
+def test_risk_reject_is_pre_submit_failed_not_unknown():
+    orders_router.check_order_risk = (
+        lambda base_url, **payload: {"passed": False, "limits_hit": ["max_position"]}
+    )
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_FAILED")) == 1
+    assert session.tasks.find_by_status("SUBMISSION_UNKNOWN") == []
+
+
+def test_risk_policy_unavailable_is_pre_submit_blocked():
+    def down(*args, **kwargs):
+        raise ConnectionError("risk-policy down")
+
+    orders_router.check_order_risk = down
+    agent, session = _agent_and_session()
+    _drive_to_approved(session, agent)
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert len(session.tasks.find_by_status("PRE_SUBMIT_BLOCKED")) == 1
+    assert session.tasks.find_by_status("SUBMISSION_UNKNOWN") == []

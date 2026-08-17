@@ -15,6 +15,14 @@ async def lifespan(_app: FastAPI):
         from quant_gateway.adapters.paper import register_paper_adapters
 
         register_paper_adapters()
+    if os.environ.get("QUANT_GATEWAY_SNAPSHOT_DIR"):
+        from quant_gateway.adapters.snapshot import register_snapshot_adapters
+
+        register_snapshot_adapters()
+    if os.environ.get("QUANT_GATEWAY_READ_ONLY") == "1":
+        from quant_gateway.adapters.registry import wrap_readonly
+
+        wrap_readonly()
     yield
 
 

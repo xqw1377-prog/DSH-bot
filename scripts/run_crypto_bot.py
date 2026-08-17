@@ -46,11 +46,15 @@ def _load_dotenv(path: Path) -> None:
 def resolve_account_id(cli_account: str | None) -> str:
     if cli_account:
         return cli_account
-    return (
+    value = (
         os.environ.get("DSH_CRYPTO_ACCOUNT_ID")
         or os.environ.get("PAPER_CRYPTO_ACCOUNT_ID")
-        or "paper-crypto-001"
     )
+    if not value:
+        raise SystemExit(
+            "account validation failed: set DSH_CRYPTO_ACCOUNT_ID or PAPER_CRYPTO_ACCOUNT_ID"
+        )
+    return value
 
 
 def resolve_market() -> Market:
@@ -122,6 +126,11 @@ def main() -> int:
         help="跳过启动账户校验（仅测试）",
     )
     args = parser.parse_args()
+    if args.mode == "live":
+        raise SystemExit(
+            "live mode is disabled until a real venue adapter, "
+            "single-writer store, identity, and outbox are complete"
+        )
 
     if args.db:
         os.environ["DSH_RUNTIME_DB"] = args.db
@@ -136,7 +145,7 @@ def main() -> int:
     profile = load_profile(ROOT / "profiles" / "crypto-bot" / "profile.yaml")
     session = BotSession.for_profile(profile)
 
-    gateway = GatewayClient(base_url=args.gateway)
+    gateway = GatewayClient(base_url=args.gateway, api_key=args.api_key)
     if not args.skip_account_check:
         validate_account(gateway, account_id, market)
 

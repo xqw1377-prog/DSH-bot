@@ -1,11 +1,11 @@
-"""Crypto Bot：共享执行核的数字资产薄封装。"""
+"""A 股 Bot：与 Crypto 共用 TradeExecutionCore，Paper 先、LLM 不进。"""
 
 from dsh_contracts import Market
 from dsh_runtime.execution import TradeExecutionCore
 
 
-class CryptoAgent(TradeExecutionCore):
-    name = "crypto-bot"
+class AShareAgent(TradeExecutionCore):
+    name = "a-stock-bot"
 
     def __init__(
         self,
@@ -16,12 +16,12 @@ class CryptoAgent(TradeExecutionCore):
         mode: str = "paper",
     ):
         super().__init__(
-            name="crypto-bot",
-            market=Market.CRYPTO,
+            name="a-stock-bot",
+            market=Market.A_SHARE,
             gateway=gateway,
             approvals=approvals,
             account_id=account_id,
             min_strength=min_strength,
             mode=mode,
-            idempotency_prefix="crypto-paper",
+            idempotency_prefix="ashare-paper",
         )

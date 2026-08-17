@@ -16,6 +16,15 @@ def register_adapter(market: Market, adapter: MarketAdapter) -> None:
     _adapters[market] = adapter
 
 
+def wrap_readonly() -> None:
+    """把已注册适配器包成只读。Shadow 是 Bot 模式，本包装禁止资金动作。"""
+    from quant_gateway.adapters.readonly import ReadOnlyAdapter
+
+    for market, adapter in list(_adapters.items()):
+        if not isinstance(adapter, ReadOnlyAdapter):
+            _adapters[market] = ReadOnlyAdapter(adapter)
+
+
 def get_adapter(market: Market) -> MarketAdapter:
     adapter = _adapters.get(market)
     if adapter is None:

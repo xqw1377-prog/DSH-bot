@@ -1,0 +1,45 @@
+{
+  "health": {
+    "system_ok": true,
+    "data_fresh": true,
+    "trading_channel_ok": false,
+    "clock_skew_ms": 0,
+    "degraded": false,
+    "detail": "exported snapshot; trading channel closed"
+  },
+  "positions": [
+    {
+      "account_id": "paper-crypto-001",
+      "symbol": "BTCUSDT",
+      "quantity": "0.35",
+      "available_quantity": "0.35",
+      "frozen_quantity": "0",
+      "avg_cost": "67420.00",
+      "currency": "USDT"
+    }
+  ],
+  "accounts": [
+    {
+      "account_id": "paper-crypto-001",
+      "cash": "58403",
+      "equity": "82000",
+      "available_cash": "58403",
+      "frozen_cash": "0",
+      "currency": "USDT",
+      "reconciliation_version": "snapshot-v1"
+    }
+  ],
+  "signals": [
+    {
+      "signal_id": "CRYPTO-sig-snapshot-1",
+      "strategy_id": "funding-basis-crypto",
+      "strategy_version": "0.1.0-snapshot",
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "strength": 0.72,
+      "generated_at": "2026-08-17T00:00:00+00:00",
+      "valid_until": "2026-08-18T00:00:00+00:00",
+      "data_snapshot_id": "CRYPTO.json"
+    }
+  ]
+}

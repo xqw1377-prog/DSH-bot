@@ -98,6 +98,8 @@ class PaperAdapter(MarketAdapter):
                 cash=self._cash,
                 equity=equity,
                 margin_used=None if self.market == Market.A_SHARE else Decimal("4100"),
+                available_cash=self._cash,
+                frozen_cash=Decimal("0"),
                 currency=self._currency,
                 reconciliation_version="paper-v1",
                 as_of=_now(),
@@ -165,28 +167,36 @@ class PaperAdapter(MarketAdapter):
         filled_at = _now().isoformat()
         quantity = Decimal(str(payload.get("quantity", "0")))
         fees = Decimal("0")
+        forced = os.environ.get("PAPER_ORDER_OUTCOME", "FILLED").upper()
         position_before = self._qty
         cash_before = self._cash
-        if payload.get("side") == "BUY":
-            self._qty += quantity
-            self._cash -= quantity * avg_price + fees
-        else:
-            self._qty -= quantity
-            self._cash += quantity * avg_price - fees
+        status = forced if forced in {
+            "FILLED", "PARTIALLY_FILLED", "REJECTED", "UNKNOWN", "CANCELLED",
+        } else "FILLED"
+        if status == "FILLED":
+            if payload.get("side") == "BUY":
+                self._qty += quantity
+                self._cash -= quantity * avg_price + fees
+            else:
+                self._qty -= quantity
+                self._cash += quantity * avg_price - fees
+        filled_qty = quantity if status == "FILLED" else (
+            quantity / 2 if status == "PARTIALLY_FILLED" else Decimal("0")
+        )
         record = {
             "order_id": order_id,
-            "status": "FILLED",
+            "status": status,
             "market": self.market.value,
             "symbol": payload.get("symbol"),
             "side": payload.get("side"),
-            "filled_quantity": str(quantity),
+            "filled_quantity": str(filled_qty),
             "avg_price": str(avg_price),
             "filled_at": filled_at,
             "fees": str(fees),
             "taxes": "0",
             "fills": [
                 {
-                    "quantity": str(quantity),
+                    "quantity": str(filled_qty),
                     "price": str(avg_price),
                     "fee": str(fees),
                 }
