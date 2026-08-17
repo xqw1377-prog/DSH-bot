@@ -20,6 +20,17 @@
       "items": {
         "type": "string"
       }
+    },
+    "bots": {
+      "type": "object",
+      "description": "各 Bot 健康度：tick_failed_recent / tasks 分布 / health",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "open_incidents": {
+      "type": "integer",
+      "description": "未决事故数（opened - resolved/mitigated，近似）"
     }
   },
   "additionalProperties": false

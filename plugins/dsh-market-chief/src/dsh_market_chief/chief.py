@@ -3,7 +3,9 @@
 职责（全部只读 + 汇总，无资金动作）：
 1. 逐市场查询 Gateway 健康状态，任何市场降级/不可达即发 incident 告警
 2. 汇总全市场待人工审批事项为待办（提醒用户审批是当前卡点）
-3. 汇总与建议写入记忆（market-summary / todo / advice），事件留痕
+3. 汇总各 Bot 健康度：近期 tick 失败、未决事故、任务状态分布
+   （来自 DSH Runtime 事件与任务账本，跨 Bot 同库只读）
+4. 汇总与建议写入记忆（market-summary / todo / advice），事件留痕
 
 Chief 不做具体订单决策——那是专业 Bot 的职责。
 """
@@ -11,12 +13,15 @@ Chief 不做具体订单决策——那是专业 Bot 的职责。
 from dsh_contracts import Market
 from dsh_gateway_client import GatewayClient, GatewayError
 from dsh_runtime import BotSession
+from dsh_runtime.store import _get as _runtime_conn
 
 
 class MarketChiefAgent:
     name = "market-chief"
 
     MARKETS = (Market.A_SHARE, Market.CRYPTO)
+    # tick 失败只统计最近时间窗
+    BOT_HEALTH_WINDOW_EVENTS = 200
 
     def __init__(self, gateway: GatewayClient, approvals=None):
         self.gateway = gateway
@@ -51,6 +56,10 @@ class MarketChiefAgent:
         except Exception:
             summary["pending_approvals"] = -1  # 未知，明确标注而非默认 0
 
+        # Bot 健康度：跨 Bot 只读 Runtime 账本（同库），不写入任何 Bot 状态
+        summary["bots"] = self._bot_health()
+        summary["open_incidents"] = self._open_incident_count()
+
         session.use("report_generation")
         self._write_summary(session, summary)
         session.events.emit(
@@ -64,6 +73,57 @@ class MarketChiefAgent:
                     {"reason": "market degraded or unreachable",
                      "markets": summary["degraded"]},
                 )
+
+    def _bot_health(self) -> dict:
+        """各 Bot 健康度：近期 tick 失败次数 + 任务状态分布。"""
+        bots: dict[str, dict] = {}
+        try:
+            conn = _runtime_conn()
+            rows = conn.execute(
+                "SELECT event_type, actor_id, occurred_at FROM domain_events"
+                " ORDER BY occurred_at DESC LIMIT ?",
+                (self.BOT_HEALTH_WINDOW_EVENTS,),
+            ).fetchall()
+        except Exception:
+            return bots  # 账本不可读：返回空汇总，不猜测
+        for event_type, actor_id, occurred_at in rows:
+            if actor_id in ("market-chief", "system", ""):
+                continue
+            entry = bots.setdefault(actor_id, {"tick_failed_recent": 0})
+            if event_type == "bot/tick.failed":
+                entry["tick_failed_recent"] += 1
+        try:
+            task_rows = conn.execute(
+                "SELECT bot, status, COUNT(*) FROM bot_tasks"
+                " GROUP BY bot, status"
+            ).fetchall()
+        except Exception:
+            task_rows = []
+        for bot, status, count in task_rows:
+            bots.setdefault(bot, {})["tasks"] = (
+                bots.setdefault(bot, {}).get("tasks", {}))
+            bots[bot]["tasks"][status] = count
+        for bot, entry in bots.items():
+            if entry.get("tick_failed_recent", 0) > 0:
+                entry["health"] = "degraded"
+            else:
+                entry["health"] = "ok"
+        return bots
+
+    def _open_incident_count(self) -> int:
+        """未决事故：incident/opened 减去后续 resolved/mitigated（近似计数）。"""
+        try:
+            conn = _runtime_conn()
+            opened = conn.execute(
+                "SELECT COUNT(*) FROM domain_events WHERE event_type = 'incident/opened'"
+            ).fetchone()[0]
+            closed = conn.execute(
+                "SELECT COUNT(*) FROM domain_events WHERE event_type IN"
+                " ('incident/resolved', 'incident/mitigated')"
+            ).fetchone()[0]
+        except Exception:
+            return -1  # 未知，明确标注而非默认 0
+        return max(opened - closed, 0)
 
     def _write_summary(self, session: BotSession, summary: dict) -> None:
         parts = []
