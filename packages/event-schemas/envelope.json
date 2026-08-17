@@ -55,7 +55,8 @@
         "order/rejected",
         "kill_switch/requested",
         "kill_switch/succeeded",
-        "kill_switch/failed"
+        "kill_switch/failed",
+        "kill_switch/resumed"
       ]
     },
     "occurred_at": {

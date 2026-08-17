@@ -30,6 +30,28 @@ def resume_strategy(market: Market, strategy_id: str,
     return {"strategy_id": strategy_id, "status": "RESUMED"}
 
 
+@router.post("/markets/{market}/kill-switch/resume")
+def resume_kill_switch(
+    market: Market,
+    account_id: str | None = None,
+    actor_id: str | None = None,
+    principal: Principal = Depends(require_write),
+):
+    """Kill Switch 人工恢复。使用独立事件，不再借用 strategy.resumed。"""
+    actor = actor_id or principal.name
+    get_adapter(market).resume_strategy(account_id or "*")
+    audit.record(
+        "kill_switch.resumed", actor, market.value, account_id,
+        detail="manual kill_switch resume",
+    )
+    return {
+        "market": market,
+        "account_id": account_id,
+        "actor_id": actor,
+        "status": "RESUMED",
+    }
+
+
 @router.post("/markets/{market}/emergency-stop")
 def emergency_stop(
     market: Market,
