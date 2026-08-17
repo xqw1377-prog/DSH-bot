@@ -281,3 +281,82 @@ def test_chief_health_queries_are_read_only():
         "SELECT COUNT(*) FROM domain_events WHERE actor_id != 'market-chief'"
     ).fetchone()[0]
     assert after_events == before_events
+
+
+def test_chief_forwards_incidents_with_dedupe(monkeypatch):
+    """Chief 转发事故到 Incident Center：幂等去重，中心不可达不影响汇总。"""
+    import os
+
+    from dsh_runtime import BotSession as BS, Profile as PF, reset
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient as TC
+
+    reset()
+    # 注入两条同指纹事故 + 一条不同指纹
+    fake_bot = BS.for_profile(PF(
+        name="crypto-bot", description="", market="CRYPTO",
+        primary_tools=frozenset(), prohibited=frozenset(),
+    ))
+    fake_bot.events.emit("incident/opened", "CRYPTO", "bot", "crypto-bot",
+                         {"reason": "order UNKNOWN beyond quarantine",
+                          "order_id": "ord-1"})
+    fake_bot.events.emit("incident/opened", "CRYPTO", "bot", "crypto-bot",
+                         {"reason": "order UNKNOWN beyond quarantine",
+                          "order_id": "ord-1"})
+    fake_bot.events.emit("incident/opened", "CRYPTO", "bot", "crypto-bot",
+                         {"reason": "fill/position mismatch after FILLED",
+                          "order_id": "ord-2"})
+
+    from incident_center import main as ic
+    ic.reset()
+    ic_client = TC(ic.app)
+
+    posted = []
+
+    class FakeIC:
+        def post(self, path, json=None, timeout=None):
+            posted.append(json)
+            class R:
+                status_code = 201
+                def json(self):
+                    return {"incident_id": "inc-x", "occurrences": 1}
+            return R()
+
+    monkeypatch.setattr(
+        "dsh_market_chief.chief.httpx", type("H", (), {"HTTPError": Exception,
+                                                       "post": staticmethod(
+                                                           lambda *a, **k: FakeIC().post(*a, **k))}))
+    monkeypatch.setenv("INCIDENT_CENTER_URL", "http://ic.test")
+
+    agent, session = _agent_and_session()
+    run_once(session, agent)   # 第一次：转发 3 条
+    run_once(session, agent)   # 第二次：重复转发（中心侧幂等去重）
+
+    assert len(posted) == 6  # 每次 tick 转发全部未决（幂等由中心保证）
+    # 指纹语义验证：用真实中心核对
+    ic.reset()
+    for body in posted[:3]:
+        ic_client.post("/v1/incidents", json=body)
+    incidents = ic_client.get("/v1/incidents").json()
+    assert len(incidents) == 2  # ord-1 两条合并，ord-2 独立
+    assert incidents[0]["occurrences"] + incidents[1]["occurrences"] == 3
+    ic.reset()
+
+
+def test_chief_forward_failure_does_not_break_summary(monkeypatch):
+    """Incident Center 不可达：Chief 记录错误记忆，汇总照常输出。"""
+    import os
+
+    class Unreachable:
+        def post(self, *a, **k):
+            raise __import__("httpx").HTTPError("connection refused")
+
+    import dsh_market_chief.chief as chief_mod
+    monkeypatch.setattr(chief_mod.httpx, "post",
+                        lambda *a, **k: Unreachable().post(*a, **k))
+    monkeypatch.setenv("INCIDENT_CENTER_URL", "http://ic-down.test")
+
+    agent, session = _agent_and_session()
+    run_once(session, agent)
+    summaries = session.events.query("market/chief.summary")
+    assert len(summaries) == 1  # 汇总未被事故转发失败破坏
