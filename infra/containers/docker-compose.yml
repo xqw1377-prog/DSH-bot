@@ -13,6 +13,10 @@ services:
       - DSH_ENV=production
       # 生产必须配置 API key，否则网关拒绝启动：
       # QUANT_GATEWAY_API_KEYS="key/name:read,write;..."
+      # 只读快照（Shadow 数据源，不是第三种交易所）：
+      # QUANT_GATEWAY_SNAPSHOT_DIR=/data/snapshots
+      # QUANT_GATEWAY_READ_ONLY=1
+      # QUANT_GATEWAY_PUBLIC_TICKER_URL=https://api.binance.com/api/v3/ticker/price?symbol={symbol}
     volumes:
       - gateway-data:/data
     networks:
@@ -24,6 +28,23 @@ services:
       dockerfile: infra/containers/services/strategy-evolution.Dockerfile
     ports:
       - "8002:8002"
+    environment:
+      - STRATEGY_EVOLUTION_AUDITOR_URL=http://risk-auditor:8005
+    depends_on:
+      - risk-auditor
+    networks:
+      - dsh
+
+  risk-auditor:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/risk-auditor.Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      - RISK_AUDITOR_DB=/data/auditor.db
+    volumes:
+      - auditor-data:/data
     networks:
       - dsh
 
@@ -44,6 +65,10 @@ services:
       - "8004:8004"
     environment:
       - QUANT_GATEWAY_URL=http://quant-gateway:8001
+      - QUANT_GATEWAY_API_KEY=${QUANT_GATEWAY_API_KEY:-}
+      - DSH_RUNTIME_DB=/data/runtime.db
+    volumes:
+      - runtime-data:/data
     depends_on:
       - quant-gateway
     networks:
@@ -57,6 +82,12 @@ services:
       - "3000:3000"
     environment:
       - PROJECTION_API_URL=http://projection-api:8004
+      - QUANT_GATEWAY_URL=http://quant-gateway:8001
+      - QUANT_GATEWAY_API_KEY=${QUANT_GATEWAY_API_KEY:-}
+      - DSH_ENV=production
+      # 生产写 BFF 必须注入会话身份，否则审批/紧急停止 503：
+      # - DSH_SESSION_USER=
+      # - DSH_WEB_ORIGIN=https://bot.example.com
     depends_on:
       - projection-api
     networks:
@@ -68,3 +99,5 @@ networks:
 
 volumes:
   gateway-data:
+  runtime-data:
+  auditor-data:

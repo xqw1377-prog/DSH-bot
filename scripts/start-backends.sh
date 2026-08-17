@@ -33,6 +33,7 @@ if [[ -z "${STRATEGY_EVOLUTION_AUDITOR_URL:-${RISK_AUDITOR_URL:-}}" ]]; then
 fi
 
 export DSH_ENV=production
+export DSH_LOCAL_PAPER=0
 export RISK_POLICY_URL="${RISK_POLICY_URL:-http://127.0.0.1:8003}"
 export QUANT_GATEWAY_URL="${QUANT_GATEWAY_URL:-http://127.0.0.1:8001}"
 export STRATEGY_EVOLUTION_URL="${STRATEGY_EVOLUTION_URL:-http://127.0.0.1:8002}"
@@ -41,6 +42,9 @@ export STRATEGY_EVOLUTION_AUDITOR_URL="${STRATEGY_EVOLUTION_AUDITOR_URL:-$RISK_A
 export QUANT_GATEWAY_DB="${QUANT_GATEWAY_DB:-$ROOT/.data/gateway.db}"
 export STRATEGY_EVOLUTION_DB="${STRATEGY_EVOLUTION_DB:-$ROOT/.data/evolution.db}"
 export RISK_AUDITOR_DB="${RISK_AUDITOR_DB:-$ROOT/.data/risk-auditor.db}"
+export DSH_RUNTIME_DB="${DSH_RUNTIME_DB:-$ROOT/.data/runtime.db}"
+# Projection / Bot 服务端持有，浏览器不持有
+export QUANT_GATEWAY_API_KEY="${QUANT_GATEWAY_API_KEY:-}"
 mkdir -p "$ROOT/.data"
 
 pids=()
