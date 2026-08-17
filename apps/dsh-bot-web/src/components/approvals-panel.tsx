@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Approval } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
 
@@ -21,19 +21,27 @@ export function ApprovalsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [decidingId, setDecidingId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      setApprovals(await projection.getApprovals("REQUESTED"));
-    } catch {
-      setApprovals([]);
-      setError("无法加载待审批项：projection-api 不可用或返回错误。");
-    }
-  }, []);
-
+  // 挂载后异步加载审批列表；渲染期不产生级联 setState
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const items = await projection.getApprovals("REQUESTED");
+        if (!cancelled) {
+          setApprovals(items);
+          setError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setApprovals([]);
+          setError("无法加载待审批项：projection-api 不可用或返回错误。");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function decide(id: string, decision: "APPROVED" | "REJECTED") {
     setDecidingId(id);
@@ -51,7 +59,12 @@ export function ApprovalsPanel() {
       setError("决定提交失败：无法连接 Quant Gateway（可能未启动）。");
     } finally {
       setDecidingId(null);
-      await load();
+      // 决定后重新拉取列表（异步回调内 setState 合法）
+      try {
+        setApprovals(await projection.getApprovals("REQUESTED"));
+      } catch {
+        setApprovals([]);
+      }
     }
   }
 

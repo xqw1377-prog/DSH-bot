@@ -49,7 +49,8 @@ def run_once(session: BotSession, agent: Agent) -> None:
     """执行一个 tick 并记录调度事件。tick 内异常不外抛——
     DSH 故障不能影响量化系统，也绝不能带着异常继续下一轮。"""
     session.events.emit(
-        "bot/tick.started", session.profile.market, "system", agent.name, {}
+        "bot/tick.started", session.profile.market, "system", agent.name,
+        {"bot": agent.name}
     )
     try:
         agent.tick(session)
@@ -59,11 +60,12 @@ def run_once(session: BotSession, agent: Agent) -> None:
         )
         session.events.emit(
             "bot/tick.failed", session.profile.market, "system", agent.name,
-            {"error": str(exc)},
+            {"bot": agent.name, "error": str(exc)},
         )
     finally:
         session.events.emit(
-            "bot/tick.finished", session.profile.market, "system", agent.name, {}
+            "bot/tick.finished", session.profile.market, "system", agent.name,
+            {"bot": agent.name}
         )
 
 

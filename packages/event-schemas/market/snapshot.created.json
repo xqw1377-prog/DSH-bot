@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/market/snapshot.created.json.json",
+  "title": "MarketSnapshotCreated",
+  "type": "object",
+  "required": [
+    "market",
+    "as_of"
+  ],
+  "properties": {
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data_version": {
+      "type": "string"
+    },
+    "instruments": {
+      "type": "number"
+    }
+  },
+  "additionalProperties": false
+}

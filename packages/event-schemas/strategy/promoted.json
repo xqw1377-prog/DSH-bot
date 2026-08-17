@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/strategy/promoted.json.json",
+  "title": "StrategyPromoted",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "from_stage",
+    "to_stage",
+    "evidence_hash"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "from_stage": {
+      "type": "string"
+    },
+    "to_stage": {
+      "type": "string"
+    },
+    "evidence_hash": {
+      "type": "string"
+    },
+    "approval_id": {
+      "type": "string"
+    },
+    "auditor_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

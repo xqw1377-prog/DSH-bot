@@ -242,7 +242,7 @@ def test_chief_summarizes_bot_health_and_incidents():
         primary_tools=frozenset(), prohibited=frozenset(),
     ))
     fake.events.emit("bot/tick.failed", "CRYPTO", "system", "crypto-bot",
-                     {"error": "upstream down"})
+                     {"bot": "crypto-bot", "error": "upstream down"})
     fake.tasks.create("paper-order", "sig-1", {"signal_id": "sig-1"})
     fake.events.emit("incident/opened", "CRYPTO", "bot", "crypto-bot",
                      {"reason": "test"})

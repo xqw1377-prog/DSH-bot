@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/strategy/rolled_back.json.json",
+  "title": "StrategyRolledBack",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "reason"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "from_stage": {
+      "type": "string"
+    },
+    "approval_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

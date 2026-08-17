@@ -1,0 +1,13 @@
+[project]
+name = "risk-auditor"
+version = "0.1.0"
+description = "独立风控审计服务：晋级前独立复核证据与审批，只读证据、无交易凭据、结论绑定候选与证据哈希"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "dsh-contracts"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
