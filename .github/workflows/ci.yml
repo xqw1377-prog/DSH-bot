@@ -65,6 +65,9 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Build client SDK
+        # web 依赖 @dsh-bot/client-sdk 的 dist；Next 不会自动编译 workspace 包
+        run: pnpm --filter @dsh-bot/client-sdk build
       - name: Lint
         run: pnpm -r lint
       - name: Lint
