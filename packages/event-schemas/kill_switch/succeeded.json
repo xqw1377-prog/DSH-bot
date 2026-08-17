@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/kill_switch/succeeded.json",
+  "title": "KillSwitchSucceeded",
+  "type": "object",
+  "required": ["reason"],
+  "additionalProperties": true,
+  "properties": {
+    "reason": { "type": "string" },
+    "market": { "type": "string" },
+    "account_id": { "type": "string" }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/incident/opened.json",
+  "title": "IncidentOpened",
+  "type": "object",
+  "required": ["reason"],
+  "additionalProperties": true,
+  "properties": {
+    "reason": { "type": "string" },
+    "task_id": { "type": "string" },
+    "order_id": { "type": "string" },
+    "approval_id": { "type": "string" }
+  }
+}
