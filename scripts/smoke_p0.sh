@@ -18,7 +18,7 @@ if [[ -f .venv/bin/activate ]]; then
   source .venv/bin/activate
 fi
 
-export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/services/quant-gateway/src:$ROOT/services/strategy-evolution/src:$ROOT/services/risk-policy/src:$ROOT/services/projection-api/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-risk-auditor/src:$ROOT/plugins/dsh-market-chief/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/services/quant-gateway/src:$ROOT/services/strategy-evolution/src:$ROOT/services/risk-policy/src:$ROOT/services/projection-api/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-risk-auditor/src:$ROOT/plugins/dsh-market-chief/src:$ROOT/plugins/dsh-incident-center/src:$ROOT/plugins/dsh-a-stock-agent/src:$ROOT/plugins/dsh-strategy-lab/src${PYTHONPATH:+:$PYTHONPATH}"
 
 SMOKE_DIR="${SMOKE_DIR:-$ROOT/.data/smoke}"
 rm -rf "$SMOKE_DIR"

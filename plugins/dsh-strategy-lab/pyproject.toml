@@ -1,0 +1,13 @@
+[project]
+name = "dsh-strategy-lab"
+version = "0.1.0"
+description = "策略实验室插件：隔离环境提出假设、运行实验、提交候选，无生产密钥"
+requires-python = ">=3.12"
+dependencies = ["dsh-contracts"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

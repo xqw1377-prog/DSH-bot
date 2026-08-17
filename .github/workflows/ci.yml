@@ -21,7 +21,10 @@ jobs:
             -e services/risk-policy -e services/projection-api \
             -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
             -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
-            -e plugins/dsh-risk-auditor
+            -e plugins/dsh-risk-auditor \
+            -e plugins/dsh-incident-center \
+            -e plugins/dsh-a-stock-agent \
+            -e plugins/dsh-strategy-lab
           pip install pytest
       - name: Schema compatibility check
         run: python scripts/check_schemas.py
@@ -44,13 +47,18 @@ jobs:
             -e services/risk-policy -e services/projection-api \
             -e plugins/dsh-quant-gateway -e plugins/dsh-trade-approval \
             -e plugins/dsh-crypto-agent -e plugins/dsh-market-chief \
-            -e plugins/dsh-risk-auditor
+            -e plugins/dsh-risk-auditor \
+            -e plugins/dsh-incident-center \
+            -e plugins/dsh-a-stock-agent \
+            -e plugins/dsh-strategy-lab
       - name: Prepare local env
         run: |
           cp .env.local.example .env.local
           chmod +x scripts/smoke_p0.sh scripts/start-local.sh scripts/start-backends.sh
       - name: Process-level P0 smoke
         run: bash scripts/smoke_p0.sh
+      - name: Runtime orchestration smoke
+        run: python scripts/smoke_runtime.py
 
   frontend:
     runs-on: ubuntu-latest
