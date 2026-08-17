@@ -18,7 +18,7 @@ if [[ -f .venv/bin/activate ]]; then
   source .venv/bin/activate
 fi
 
-export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/services/quant-gateway/src:$ROOT/services/strategy-evolution/src:$ROOT/services/risk-policy/src:$ROOT/services/projection-api/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-a-stock-agent/src:$ROOT/plugins/dsh-risk-auditor/src:$ROOT/plugins/dsh-market-chief/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/services/quant-gateway/src:$ROOT/services/strategy-evolution/src:$ROOT/services/risk-policy/src:$ROOT/services/projection-api/src:$ROOT/services/incident-center/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-a-stock-agent/src:$ROOT/plugins/dsh-risk-auditor/src:$ROOT/plugins/dsh-market-chief/src${PYTHONPATH:+:$PYTHONPATH}"
 
 SMOKE_DIR="${SMOKE_DIR:-$ROOT/.data/smoke}"
 rm -rf "$SMOKE_DIR"
@@ -275,6 +275,24 @@ if [[ "$COUNT3" != "1" ]]; then
   echo "[smoke] memory not recovered; crypto approvals=$COUNT3" >&2
   exit 1
 fi
+
+echo "[smoke] kill switch request/succeed/resume"
+curl -sf -X POST "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/emergency-stop" >/dev/null
+curl -sf -X POST "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/kill-switch/resume" >/dev/null
+curl -sf "$QUANT_GATEWAY_URL/v1/audit" | python -c "
+import json,sys
+actions={r.get('action') for r in json.load(sys.stdin)}
+assert 'kill_switch.requested' in actions, actions
+assert 'kill_switch.succeeded' in actions, actions
+assert 'kill_switch.resumed' in actions, actions
+print('kill switch audit ok')
+"
+curl -sf "$PROJECTION_API_URL/v1/incidents" | python -c "
+import json,sys
+rows=json.load(sys.stdin)
+assert any(r.get('event_type','').startswith('kill_switch/') for r in rows), rows
+print('kill switch projected', sum(1 for r in rows if str(r.get('event_type','')).startswith('kill_switch/')))
+"
 
 echo "[smoke] shadow records decision without new approval"
 python scripts/run_crypto_bot.py --once --mode shadow --db "$SMOKE_DIR/runtime-shadow.db"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { IncidentEvent } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
 
@@ -9,19 +9,37 @@ export function IncidentsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
 
-  const load = useCallback(async () => {
-    setError(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const next = await projection.getIncidents(50);
+        if (!cancelled) {
+          setItems(next);
+          setError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setItems([]);
+          setError("无法加载事故：projection-api 或 Runtime DB 不可用。");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function refresh() {
     try {
-      setItems(await projection.getIncidents(50));
+      const next = await projection.getIncidents(50);
+      setItems(next);
+      setError(null);
     } catch {
       setItems([]);
       setError("无法加载事故：projection-api 或 Runtime DB 不可用。");
     }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  }
 
   async function emergencyStop(market: "CRYPTO" | "A_SHARE") {
     setStopping(true);
@@ -45,7 +63,7 @@ export function IncidentsPanel() {
       setError("紧急停止失败：无法连接 BFF。");
     } finally {
       setStopping(false);
-      await load();
+      await refresh();
     }
   }
 

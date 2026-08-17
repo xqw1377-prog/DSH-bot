@@ -20,7 +20,7 @@ jobs:
       - name: Schema compatibility check
         run: python scripts/check_schemas.py
       - name: Tests
-        run: pytest services/ plugins/ packages/ -q --tb=short -ra
+        run: pytest services/ plugins/ packages/ -q --tb=short -ra --import-mode=importlib
 
   smoke:
     runs-on: ubuntu-latest
