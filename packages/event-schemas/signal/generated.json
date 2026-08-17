@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/signal/generated.json.json",
+  "title": "SignalGenerated",
+  "type": "object",
+  "required": [
+    "signal_id",
+    "market",
+    "strategy_id",
+    "strategy_version",
+    "symbol",
+    "side"
+  ],
+  "properties": {
+    "signal_id": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": [
+        "A_SHARE",
+        "CRYPTO"
+      ]
+    },
+    "strategy_id": {
+      "type": "string"
+    },
+    "strategy_version": {
+      "type": "string"
+    },
+    "symbol": {
+      "type": "string"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "BUY",
+        "SELL"
+      ]
+    },
+    "strength": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data_snapshot_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

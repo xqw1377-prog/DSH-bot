@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/incident/mitigated.json.json",
+  "title": "IncidentMitigated",
+  "type": "object",
+  "required": [
+    "incident_id",
+    "action"
+  ],
+  "properties": {
+    "incident_id": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "mitigated_by": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

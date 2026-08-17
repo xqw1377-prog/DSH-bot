@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/bot/tick.failed.json.json",
+  "title": "BotTickFailed",
+  "type": "object",
+  "required": [
+    "bot",
+    "error"
+  ],
+  "properties": {
+    "bot": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

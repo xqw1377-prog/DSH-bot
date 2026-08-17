@@ -38,6 +38,8 @@ jobs:
         run: |
           pnpm --filter @dsh-bot/client-sdk build  # 类型声明在 dist，先构建再 lint
           pnpm -r lint
+      - name: Test
+        run: pnpm --filter dsh-bot-web test
       - name: Build
         run: |
           pnpm --filter @dsh-bot/client-sdk build
