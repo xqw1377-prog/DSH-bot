@@ -53,11 +53,17 @@ class ExecutionAdapter(MarketAdapter):
         )
 
     def get_positions(self, account_id=None):
-        return []
+        from dsh_contracts import Position
+        return [Position(
+            market=self.market, account_id="paper-crypto-001",
+            symbol="BTCUSDT", quantity="0.36", available_quantity="0.36",
+            frozen_quantity="0", avg_cost="67420", currency="USDT",
+            as_of=datetime.now(UTC),
+        )]
 
     def get_account_summary(self):
         return [AccountSummary(
-            market=self.market, account_id="crypto-paper-1",
+            market=self.market, account_id="paper-crypto-001",
             cash="50000", equity="82000", currency="USDT",
             reconciliation_version="v1", as_of=datetime.now(UTC),
         )]
@@ -80,7 +86,7 @@ class ExecutionAdapter(MarketAdapter):
             estimated_slippage=Decimal("0.0005"),
             risk=RiskSnapshot(
                 risk_snapshot_id=f"rs-sig-x", market=self.market,
-                account_id="crypto-paper-1",
+                account_id="paper-crypto-001",
                 position_before=Decimal("0"), position_after=qty,
                 risk_budget_delta=notional,
                 worst_case_loss=notional * Decimal("0.01"),
@@ -136,7 +142,7 @@ def _agent_and_session():
     approvals._client = client
     from dsh_crypto_agent import CryptoAgent
     agent = CryptoAgent(gateway=gateway, approvals=approvals,
-                        account_id="crypto-paper-1")
+                        account_id="paper-crypto-001")
     return agent, BotSession.for_profile(
         load_profile(PROFILES / "crypto-bot" / "profile.yaml")
     )
@@ -163,7 +169,7 @@ def test_approved_executes_exactly_once():
     run_once(session, agent)  # 再 tick 不重复
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1
-    assert len(session.tasks.find_by_status("FILLED")) == 1
+    assert len(session.tasks.find_by_status("RECONCILED")) == 1
 
 
 # ---- 2. 拒绝和审批超时不执行 ----
@@ -239,7 +245,7 @@ def test_duplicate_processing_yields_single_order():
     _drive_to_approved(session, agent)
     run_once(session, agent)  # 正常执行一次
     assert len(ADAPTER.submitted) == 1
-    order_id = session.tasks.find_by_status("FILLED")[0]["order_id"]
+    order_id = session.tasks.find_by_status("RECONCILED")[0]["order_id"]
 
     # 模拟重复消息：把任务拨回待审批执行态，再 tick
     from dsh_runtime.store import _get
@@ -251,7 +257,7 @@ def test_duplicate_processing_yields_single_order():
     conn.commit()
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1  # 幂等认领，没有第二笔
-    adopted = session.tasks.find_by_status("FILLED")
+    adopted = session.tasks.find_by_status("RECONCILED")
     assert adopted[0]["order_id"] == order_id
 
 
@@ -279,10 +285,10 @@ def test_crash_after_submit_recovers_without_resubmission():
         " WHERE task_id LIKE '%sig-x'"
     )
     conn.commit()
-    # 重启后第一个 tick：409 → 认领既有订单 → 查询恢复 → FILLED
+    # 重启后第一个 tick：409 → 认领既有订单 → 查询恢复 → RECONCILED
     run_once(session, agent)
     assert len(ADAPTER.submitted) == 1  # 没有重复下单
-    assert len(session.tasks.find_by_status("FILLED")) == 1
+    assert len(session.tasks.find_by_status("RECONCILED")) == 1
 
 
 # ---- 6. 部分成交、撤单、拒单、未知状态对账 ----
@@ -298,7 +304,7 @@ def test_order_lifecycle_reconciliation(venue_status, final_state):
     _drive_to_approved(session, agent)
     ADAPTER.order_status.clear()
     run_once(session, agent)  # 提交
-    task = session.tasks.find_by_status("SUBMITTED", "FILLED")[0]
+    task = session.tasks.find_by_status("SUBMITTED", "ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED", "RECONCILED")[0]
     ADAPTER.set_order_status(task["order_id"], venue_status)
     conn = _get_conn_helper()
     conn.execute(

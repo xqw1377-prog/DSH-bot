@@ -148,8 +148,22 @@ ids=[r['subject_id'] for r in rows if r.get('action')=='order.submitted']
 assert len(ids)==1, ids
 print(ids[0])
 ")
+# Paper：订单应至少到达 FILLED（Agent 同 tick 可能已对账完成）
+STATUS1=$(curl -sf "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/orders/$ORDER_ID")
+printf '%s' "$STATUS1" | python -c "import json,sys; s=json.load(sys.stdin); assert s['status'] in ('ACKNOWLEDGED','FILLED'), s"
 STATUS=$(curl -sf "$QUANT_GATEWAY_URL/v1/markets/CRYPTO/orders/$ORDER_ID")
 printf '%s' "$STATUS" | python -c "import json,sys; s=json.load(sys.stdin); assert s['status']=='FILLED', s; print('filled', s['order_id'])"
+
+# Bot 任务终态必须是 RECONCILED（非 SUBMITTED/FILLED）
+python - <<PY
+import os, sqlite3
+db = os.environ["DSH_RUNTIME_DB"]
+conn = sqlite3.connect(db)
+rows = conn.execute("SELECT status FROM bot_tasks WHERE bot='crypto-bot'").fetchall()
+assert rows, "no bot tasks"
+assert all(r[0] == "RECONCILED" for r in rows), rows
+print("tasks reconciled", len(rows))
+PY
 
 echo "[smoke] auditor unavailable → cannot promote"
 CAND=$(curl -sf -X POST "$STRATEGY_EVOLUTION_URL/v1/candidates" \

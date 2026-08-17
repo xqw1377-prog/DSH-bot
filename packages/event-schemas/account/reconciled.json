@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/account/reconciled.json",
+  "title": "AccountReconciled",
+  "type": "object",
+  "required": ["account_id", "order_id", "reconciled_at"],
+  "properties": {
+    "account_id": { "type": "string" },
+    "order_id": { "type": "string" },
+    "symbol": { "type": "string" },
+    "quantity": { "type": "string" },
+    "equity": { "type": "string" },
+    "cash": { "type": "string" },
+    "reconciliation_version": { "type": "string" },
+    "task_id": { "type": "string" },
+    "reconciled_at": { "type": "string", "format": "date-time" }
+  }
+}

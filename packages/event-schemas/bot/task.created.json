@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/bot/task.created.json",
+  "title": "BotTaskCreated",
+  "type": "object",
+  "required": ["task_id", "bot", "kind", "subject_id"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "bot": { "type": "string" },
+    "kind": { "type": "string" },
+    "subject_id": { "type": "string" }
+  }
+}

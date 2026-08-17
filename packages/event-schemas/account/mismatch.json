@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/account/mismatch.json",
+  "title": "AccountMismatch",
+  "type": "object",
+  "required": ["account_id", "reason"],
+  "properties": {
+    "account_id": { "type": "string" },
+    "order_id": { "type": "string" },
+    "reason": { "type": "string" },
+    "task_id": { "type": "string" }
+  }
+}

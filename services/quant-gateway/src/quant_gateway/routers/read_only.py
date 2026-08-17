@@ -58,8 +58,21 @@ def get_order_status(market: Market, order_id: str):
 def get_idempotency_key(key: str):
     """按幂等键查询已产生的订单。崩溃恢复 / 409 冲突时用于认领既有订单，
     绝不用于重新下单。"""
-    entry = storage.get_idempotency_entry(key)
-    if entry is None:
+    record = storage.get_idempotency_record(key)
+    if record is None:
+        # 崩溃窗口：键尚未 finalize，尝试反查 paper 订单
+        recovered = storage.find_paper_order_by_idempotency_key(key)
+        if recovered and recovered.get("order_id"):
+            return {
+                "key": key,
+                "order_id": recovered["order_id"],
+                "request_hash": None,
+                "status": "RECOVERED",
+            }
         raise HTTPException(status_code=404, detail="idempotency key not found")
-    order_id, request_hash = entry
-    return {"key": key, "order_id": order_id, "request_hash": request_hash}
+    return {
+        "key": key,
+        "order_id": record["order_id"],
+        "request_hash": record["request_hash"],
+        "status": record["status"],
+    }

@@ -39,10 +39,21 @@ class SignalFakeAdapter(MarketAdapter):
         )
 
     def get_positions(self, account_id=None):
-        return []
+        from dsh_contracts import Position
+        return [Position(
+            market=self.market, account_id="paper-crypto-001",
+            symbol="BTC/USDT", quantity="0.01", available_quantity="0.01",
+            frozen_quantity="0", avg_cost="65000", currency="USDT",
+            as_of=datetime.now(UTC),
+        )]
 
     def get_account_summary(self):
-        return []
+        from dsh_contracts import AccountSummary
+        return [AccountSummary(
+            market=self.market, account_id="paper-crypto-001",
+            cash="50000", equity="82000", currency="USDT",
+            reconciliation_version="v1", as_of=datetime.now(UTC),
+        )]
 
     def get_signals(self):
         now = datetime.now(UTC)
@@ -206,9 +217,12 @@ def test_approved_signal_submits_paper_order(monkeypatch):
     assert len(filled) == 1
     assert filled[0]["payload"]["order_id"] == submitted[0]["payload"]["order_id"]
 
-    tasks = session.tasks.find_by_status("FILLED")
+    tasks = session.tasks.find_by_status("RECONCILED")
     assert len(tasks) == 1
     assert tasks[0]["order_id"].startswith("CRYPTO-ord-")
+
+    assert len(session.events.query("order/acknowledged")) >= 1
+    assert len(session.events.query("account/reconciled")) == 1
 
     # 审计日志：网关侧记录了订单提交
     audit = client.get("/v1/audit").json()
@@ -218,6 +232,7 @@ def test_approved_signal_submits_paper_order(monkeypatch):
     run_once(session, agent)
     assert len(session.events.query("order/submitted")) == 1
     assert len(session.events.query("order/filled")) == 1
+    assert len(session.tasks.find_by_status("RECONCILED")) == 1
 
 
 def test_rejected_signal_never_submits(monkeypatch):
@@ -257,4 +272,4 @@ def test_task_state_survives_runtime_restart(monkeypatch, tmp_path):
     _approve(approval_id)
     agent2, _ = _agent_and_session()
     run_once(session2, agent2)  # 重启后第一个 tick 完成提交
-    assert len(session2.tasks.find_by_status("FILLED")) == 1
+    assert len(session2.tasks.find_by_status("RECONCILED")) == 1

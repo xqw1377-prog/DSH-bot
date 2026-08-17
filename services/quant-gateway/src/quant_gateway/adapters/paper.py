@@ -1,8 +1,12 @@
 """本地联调用 Paper 适配器。
 
 仅在环境变量 DSH_LOCAL_PAPER=1 时注册，不改变生产失败关闭行为。
-账户 ID 来自统一配置（PAPER_*_ACCOUNT_ID），不在 runner / 适配器分别硬编码。
-下单后立即纸面成交并落库，重启后可通过 get_order_status 恢复。
+账户 ID 来自统一配置（PAPER_*_ACCOUNT_ID）。
+
+订单状态流（模拟交易所）：
+  request_order → ACKNOWLEDGED（仓位未变）
+  首次 get_order_status 交付 ACK
+  再次 get_order_status → FILLED（更新持仓/现金并落库）
 """
 
 from __future__ import annotations
@@ -105,7 +109,6 @@ class PaperAdapter(MarketAdapter):
         ]
 
     def get_signals(self) -> list[Signal]:
-        # 强度高于默认 min_strength(0.6)；valid_until 留足余量供审批后再校验
         now = _now()
         return [
             Signal(
@@ -131,16 +134,17 @@ class PaperAdapter(MarketAdapter):
             intent if isinstance(intent, OrderIntent) else OrderIntent.model_validate(intent)
         )
         notional = order_intent.quantity * self._price
+        after = self._qty + (
+            order_intent.quantity
+            if order_intent.side == OrderSide.BUY
+            else -order_intent.quantity
+        )
         risk = RiskSnapshot(
             risk_snapshot_id=order_intent.risk_snapshot_id,
             market=order_intent.market,
             account_id=order_intent.account_id,
             position_before=self._qty,
-            position_after=self._qty + (
-                order_intent.quantity
-                if order_intent.side == OrderSide.BUY
-                else -order_intent.quantity
-            ),
+            position_after=after,
             risk_budget_delta=notional,
             worst_case_loss=notional * Decimal("0.01"),
             limits_hit=[],
@@ -161,45 +165,89 @@ class PaperAdapter(MarketAdapter):
                 f"expected={self._account_id}"
             )
         order_id = f"{self.market.value}-paper-{next(self._ids)}"
-        avg_price = self._price
-        filled_at = _now().isoformat()
         record = {
             "order_id": order_id,
-            "status": "FILLED",
+            "status": "ACKNOWLEDGED",
+            "ack_delivered": False,
             "market": self.market.value,
             "symbol": payload.get("symbol"),
             "side": payload.get("side"),
-            "filled_quantity": str(payload.get("quantity")),
-            "avg_price": str(avg_price),
-            "filled_at": filled_at,
+            "filled_quantity": "0",
+            "avg_price": str(self._price),
+            "filled_at": None,
             "fees": "0",
             "source": "paper",
             "account_id": self._account_id,
             "intent": payload,
+            # 对账期望：成交后持仓/现金
+            "expected_qty_delta": str(
+                payload.get("quantity") if payload.get("side") == "BUY"
+                else f"-{payload.get('quantity')}"
+            ),
+            "expected_cash_delta": str(
+                -(Decimal(str(payload.get("quantity", "0"))) * self._price)
+                if payload.get("side") == "BUY"
+                else (Decimal(str(payload.get("quantity", "0"))) * self._price)
+            ),
         }
         self.submitted.append(payload)
         self._orders[order_id] = record
         storage.save_paper_order(order_id, self.market.value, record)
-        quantity = Decimal(str(payload.get("quantity", "0")))
-        if payload.get("side") == "BUY":
+        return order_id
+
+    def _apply_fill(self, record: dict) -> dict:
+        intent = record.get("intent") or {}
+        quantity = Decimal(str(intent.get("quantity", "0")))
+        avg_price = self._price
+        if intent.get("side") == "BUY":
             self._qty += quantity
             self._cash -= quantity * avg_price
         else:
             self._qty -= quantity
             self._cash += quantity * avg_price
-        return order_id
+        record["status"] = "FILLED"
+        record["filled_quantity"] = str(quantity)
+        record["avg_price"] = str(avg_price)
+        record["filled_at"] = _now().isoformat()
+        record["fees"] = "0"
+        record["position_after"] = str(self._qty)
+        record["cash_after"] = str(self._cash)
+        storage.save_paper_order(record["order_id"], self.market.value, record)
+        return record
 
     def get_order_status(self, order_id: str) -> dict:
         if order_id in self._orders:
-            return dict(self._orders[order_id])
-        stored = storage.get_paper_order(order_id)
-        if stored is not None:
+            record = self._orders[order_id]
+        else:
+            stored = storage.get_paper_order(order_id)
+            if stored is None:
+                return {"order_id": order_id, "status": "UNKNOWN", "source": "paper"}
             self._orders[order_id] = stored
-            return dict(stored)
-        return {"order_id": order_id, "status": "UNKNOWN", "source": "paper"}
+            record = stored
+
+        if record.get("status") == "ACKNOWLEDGED":
+            if not record.get("ack_delivered"):
+                record["ack_delivered"] = True
+                storage.save_paper_order(order_id, self.market.value, record)
+                return {
+                    "order_id": order_id,
+                    "status": "ACKNOWLEDGED",
+                    "market": record.get("market"),
+                    "symbol": record.get("symbol"),
+                    "source": "paper",
+                    "account_id": record.get("account_id"),
+                }
+            # 第二次查询：推进到 FILLED 并回写资金/持仓
+            record = self._apply_fill(record)
+            self._orders[order_id] = record
+
+        return dict(record)
 
     def cancel_order(self, order_id: str) -> dict:
         self.cancelled.append(order_id)
+        if order_id in self._orders:
+            self._orders[order_id]["status"] = "CANCELLED"
+            storage.save_paper_order(order_id, self.market.value, self._orders[order_id])
         return {"order_id": order_id, "status": "CANCELLED", "source": "paper"}
 
     def pause_strategy(self, strategy_id: str) -> None:

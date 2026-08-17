@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/order/acknowledged.json",
+  "title": "OrderAcknowledged",
+  "type": "object",
+  "required": ["order_id", "market", "acknowledged_at"],
+  "properties": {
+    "order_id": { "type": "string" },
+    "market": { "type": "string", "enum": ["A_SHARE", "CRYPTO"] },
+    "symbol": { "type": "string" },
+    "task_id": { "type": "string" },
+    "acknowledged_at": { "type": "string", "format": "date-time" }
+  }
+}

@@ -80,15 +80,18 @@ def request_order(market: Market, intent: dict,
 
     adapter = get_adapter(market)
 
-    # 2. 幂等：请求体哈希 + 持久化键日志。
-    # 相同键相同请求体 → 409 并返回已有订单；相同键不同请求体 → 409 冲突。
+    # 2. 幂等：请求体哈希 + 持久化键日志（RESERVED→SUBMITTED→COMPLETED）。
+    # 相同键相同请求体且已有 order_id → 409 并返回已有订单（不重下）。
+    # RESERVED 无 order_id：尝试按 key 反查 venue/paper 订单并补完，仍无则 409 in-flight。
     idempotency_key = order_intent.idempotency_key
     request_hash = hashlib.sha256(
         json.dumps(order_intent.model_dump(mode="json"), sort_keys=True).encode()
     ).hexdigest()
-    entry = storage.get_idempotency_entry(idempotency_key)
-    if entry is not None:
-        previous_order_id, previous_hash = entry
+    record = storage.get_idempotency_record(idempotency_key)
+    if record is not None:
+        previous_order_id = record["order_id"]
+        previous_hash = record["request_hash"]
+        status = record["status"]
         if previous_hash != request_hash:
             raise HTTPException(
                 status_code=409,
@@ -97,11 +100,32 @@ def request_order(market: Market, intent: dict,
                     "rejected"
                 ),
             )
+        if previous_order_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "duplicate idempotency key; no new order created; "
+                    f"previous order_id={previous_order_id}"
+                ),
+            )
+        # 崩溃窗口：RESERVED 且无 order_id → 反查 paper/venue
+        recovered = storage.find_paper_order_by_idempotency_key(idempotency_key)
+        if recovered and recovered.get("order_id"):
+            oid = recovered["order_id"]
+            storage.mark_idempotency_submitted(idempotency_key, oid)
+            storage.finalize_idempotency_key(idempotency_key, oid)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "duplicate idempotency key; recovered after crash; "
+                    f"previous order_id={oid}"
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail=(
-                "duplicate idempotency key; no new order created; "
-                f"previous order_id={previous_order_id or '(in flight)'}"
+                f"duplicate idempotency key; status={status}; "
+                "previous order_id=(in flight)"
             ),
         )
 
@@ -152,21 +176,39 @@ def request_order(market: Market, intent: dict,
             detail=f"approval {order_intent.approval_id} is not APPROVED; order rejected",
         )
 
-    # 6. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
+    # 6. 原子抢占幂等键（BEGIN IMMEDIATE → RESERVED）
     if not storage.record_idempotency_key(idempotency_key, request_hash):
+        # 并发输掉：再查一次，若对方已写出 order_id 则返回该 id
+        again = storage.get_idempotency_record(idempotency_key)
+        oid = (again or {}).get("order_id")
         raise HTTPException(
             status_code=409,
             detail=(
                 "duplicate idempotency key (concurrent request won); "
-                "no new order created"
+                f"previous order_id={oid or '(in flight)'}"
             ),
         )
 
     try:
         order_id = adapter.request_order(order_intent.model_dump(mode="json"))
+        # 先写入 SUBMITTED（带 order_id），再 COMPLETED —— 缩小崩溃双单窗口
+        storage.mark_idempotency_submitted(idempotency_key, order_id)
+        storage.finalize_idempotency_key(idempotency_key, order_id)
     except ValueError as exc:
+        storage.mark_idempotency_failed(idempotency_key)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    storage.finalize_idempotency_key(idempotency_key, order_id)
+    except Exception:
+        # venue 异常：若已产生 paper 订单则补完，否则标 FAILED 允许同 hash 重试
+        recovered = storage.find_paper_order_by_idempotency_key(idempotency_key)
+        if recovered and recovered.get("order_id"):
+            oid = recovered["order_id"]
+            storage.mark_idempotency_submitted(idempotency_key, oid)
+            storage.finalize_idempotency_key(idempotency_key, oid)
+            order_id = oid
+        else:
+            storage.mark_idempotency_failed(idempotency_key)
+            raise
+
     audit.record(
         "order.submitted", principal.name, market.value, order_id,
         detail=f"intent={order_intent.idempotency_key} "

@@ -56,8 +56,10 @@ class CryptoAgent:
             "AWAITING_APPROVAL", "APPROVED_SUBMITTING"
         ):
             self._advance_awaiting(session, task)
-        for task in session.tasks.find_by_status("SUBMITTED"):
-            self._reconcile_fill(session, task)
+        for task in session.tasks.find_by_status(
+            "SUBMITTED", "ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED"
+        ):
+            self._reconcile_order(session, task)
 
     def _advance_awaiting(self, session: BotSession, task: dict) -> None:
         approval_id = task["approval_id"]
@@ -245,35 +247,56 @@ class CryptoAgent:
             f"订单 {result['order_id']} 已提交（Paper），审批 {task['approval_id']}",
             kind="order-submitted", tags=[task["task_id"], result["order_id"]],
         )
-        # Paper 通常即时成交；同 tick 对账，避免任务停在 SUBMITTED
+        # Paper：同 tick 推进 ACK→FILL→RECONCILED
         submitted = session.tasks.get(task["task_id"])
         if submitted is not None:
-            self._reconcile_fill(session, submitted)
+            self._reconcile_order(session, submitted)
 
     def _adopt_existing_order(self, session: BotSession, task: dict) -> None:
         """按幂等键认领既有订单（409 冲突路径），进入状态轮询，不重复下单。"""
         resp = self.gateway._client.get(
             f"/v1/idempotency-keys/{task['idempotency_key']}"
         )
-        order_id = resp.json().get("order_id") if resp.status_code == 200 else None
+        body = resp.json() if resp.status_code == 200 else {}
+        order_id = body.get("order_id")
         if not order_id:
-            session.tasks.transition(task["task_id"], "FAILED")
+            # in-flight：保持 APPROVED_SUBMITTING，下个 tick 再认领，绝不重新下单
             session.memory.remember(
-                f"任务 {task['task_id']} 幂等冲突但查不到既有订单，标记失败",
-                kind="error", tags=[task["task_id"]],
+                f"任务 {task['task_id']} 幂等冲突且订单仍在途，等待恢复（不重新下单）",
+                kind="order-inflight", tags=[task["task_id"]],
             )
             return
-        session.tasks.transition(task["task_id"], "SUBMITTED", order_id=order_id)
+        if task["status"] == "APPROVED_SUBMITTING":
+            session.tasks.transition(task["task_id"], "SUBMITTED", order_id=order_id)
         session.memory.remember(
             f"任务 {task['task_id']} 认领既有订单 {order_id}（幂等冲突，不重复下单）",
             kind="order-adopted", tags=[task["task_id"], order_id],
         )
-        self._reconcile_fill(session, session.tasks.get(task["task_id"]))
+        current = session.tasks.get(task["task_id"])
+        if current is not None:
+            self._reconcile_order(session, current)
 
-    def _reconcile_fill(self, session: BotSession, task: dict) -> None:
+    def _reconcile_order(self, session: BotSession, task: dict) -> None:
+        """推进订单状态直至 RECONCILED。同一 tick 可多步（ACK→FILL→对账）。"""
+        for _ in range(4):
+            current = session.tasks.get(task["task_id"])
+            if current is None:
+                return
+            if current["status"] in {
+                "RECONCILED", "FAILED", "CANCELLED", "ORDER_REJECTED",
+            }:
+                return
+            if current["status"] == "FILLED":
+                self._reconcile_account(session, current)
+                return
+            progressed = self._advance_venue_status(session, current)
+            if not progressed:
+                return
+
+    def _advance_venue_status(self, session: BotSession, task: dict) -> bool:
         order_id = task.get("order_id")
         if not order_id:
-            return
+            return False
         try:
             session.use("query_order_status")
             status = self.gateway.get_order_status(Market.CRYPTO, order_id)
@@ -282,43 +305,85 @@ class CryptoAgent:
                 f"订单 {order_id} 状态查询失败: {exc}", kind="error",
                 tags=[task["task_id"], order_id],
             )
-            return
+            return False
 
         order_status = status.get("status")
         if order_status == "CANCELLED":
-            session.tasks.transition(task["task_id"], "CANCELLED")
-            session.events.emit(
-                "order/cancelled", "CRYPTO", "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id},
-            )
-            return
+            if task["status"] != "CANCELLED":
+                session.tasks.transition(task["task_id"], "CANCELLED")
+                session.events.emit(
+                    "order/cancelled", "CRYPTO", "bot", self.name,
+                    {"task_id": task["task_id"], "order_id": order_id},
+                )
+            return False
         if order_status == "REJECTED":
-            session.tasks.transition(task["task_id"], "ORDER_REJECTED")
+            if task["status"] != "ORDER_REJECTED":
+                session.tasks.transition(task["task_id"], "ORDER_REJECTED")
+                session.events.emit(
+                    "order/rejected", "CRYPTO", "bot", self.name,
+                    {"task_id": task["task_id"], "order_id": order_id,
+                     "reason": "order rejected by venue"},
+                )
+            return False
+        if order_status == "UNKNOWN":
             session.events.emit(
                 "order/unknown", "CRYPTO", "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "reason": "order rejected by venue"},
+                {"task_id": task["task_id"], "order_id": order_id},
             )
-            return
-        if order_status == "PARTIALLY_FILLED":
-            session.tasks.transition(task["task_id"], "PARTIALLY_FILLED")
-            session.events.emit(
-                "order/filled", "CRYPTO", "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "partial": True,
-                 "filled_quantity": str(status.get("filled_quantity") or "0")},
-            )
-            return  # 继续轮询直至 FILLED 或人工撤单
-        if order_status == "UNKNOWN":
-            # 未知状态：只查询，绝不重新提交；保持任务在途继续对账
             session.memory.remember(
                 f"订单 {order_id} 状态 UNKNOWN，保持查询恢复（不重新提交）",
                 kind="order-unknown", tags=[task["task_id"], order_id],
             )
-            return
+            return False
+        if order_status == "ACKNOWLEDGED":
+            if task["status"] == "SUBMITTED":
+                session.tasks.transition(task["task_id"], "ACKNOWLEDGED")
+                session.events.emit(
+                    "order/acknowledged", "CRYPTO", "bot", self.name,
+                    {
+                        "order_id": order_id,
+                        "market": "CRYPTO",
+                        "symbol": status.get("symbol") or task["payload"].get("symbol"),
+                        "task_id": task["task_id"],
+                        "acknowledged_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                return True
+            return True  # 已 ACK，继续下一轮拉 FILLED
+        if order_status == "PARTIALLY_FILLED":
+            if task["status"] != "PARTIALLY_FILLED":
+                if task["status"] == "SUBMITTED":
+                    session.tasks.transition(task["task_id"], "ACKNOWLEDGED")
+                session.tasks.transition(task["task_id"], "PARTIALLY_FILLED")
+            session.events.emit(
+                "order/partially_filled", "CRYPTO", "bot", self.name,
+                {
+                    "order_id": order_id,
+                    "market": "CRYPTO",
+                    "symbol": status.get("symbol") or task["payload"].get("symbol"),
+                    "filled_quantity": str(status.get("filled_quantity") or "0"),
+                    "task_id": task["task_id"],
+                },
+            )
+            return True
         if order_status != "FILLED":
-            return
+            return False
 
+        # venue FILLED：任务推进到 FILLED（可从 SUBMITTED/ACK/PARTIAL 直达）
+        if task["status"] == "SUBMITTED":
+            # 补发 ACK 事件（即使状态机一步到 FILLED）
+            session.events.emit(
+                "order/acknowledged", "CRYPTO", "bot", self.name,
+                {
+                    "order_id": order_id,
+                    "market": "CRYPTO",
+                    "symbol": status.get("symbol") or task["payload"].get("symbol"),
+                    "task_id": task["task_id"],
+                    "acknowledged_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        if task["status"] != "FILLED":
+            session.tasks.transition(task["task_id"], "FILLED")
         session.events.emit(
             "order/filled", "CRYPTO", "bot", self.name,
             {
@@ -337,10 +402,95 @@ class CryptoAgent:
                 "task_id": task["task_id"],
             },
         )
-        session.tasks.transition(task["task_id"], "FILLED")
         session.memory.remember(
-            f"订单 {order_id} 已成交并对账",
+            f"订单 {order_id} 已成交，进入账户对账",
             kind="order-filled", tags=[task["task_id"], order_id],
+        )
+        return True
+
+    def _reconcile_account(self, session: BotSession, task: dict) -> None:
+        """持仓与资金对账通过后，任务才进入 RECONCILED。"""
+        order_id = task.get("order_id")
+        signal = task["payload"]
+        try:
+            session.use("query_positions")
+            positions = self.gateway.get_positions(Market.CRYPTO, self.account_id)
+            summaries = self.gateway.get_account_summary(Market.CRYPTO)
+        except GatewayError as exc:
+            session.memory.remember(
+                f"对账失败（账户不可达）: {exc}", kind="error",
+                tags=[task["task_id"], "reconcile"],
+            )
+            return
+
+        match = next((s for s in summaries if s.get("account_id") == self.account_id), None)
+        if match is None:
+            session.events.emit(
+                "account/mismatch", "CRYPTO", "bot", self.name,
+                {
+                    "account_id": self.account_id,
+                    "order_id": order_id,
+                    "reason": "account summary missing after fill",
+                    "task_id": task["task_id"],
+                },
+            )
+            session.tasks.transition(task["task_id"], "FAILED")
+            return
+
+        pos = next(
+            (p for p in positions if p.get("symbol") == signal.get("symbol")),
+            None,
+        )
+        if pos is None:
+            session.events.emit(
+                "account/mismatch", "CRYPTO", "bot", self.name,
+                {
+                    "account_id": self.account_id,
+                    "order_id": order_id,
+                    "reason": f"position missing for {signal.get('symbol')}",
+                    "task_id": task["task_id"],
+                },
+            )
+            session.tasks.transition(task["task_id"], "FAILED")
+            return
+
+        # Paper 对账：持仓数量应为正、权益可读即可（严格数值由 expected_* 可选校验）
+        try:
+            qty = Decimal(str(pos.get("quantity", "0")))
+            equity = Decimal(str(match.get("equity", "0")))
+        except Exception:
+            qty, equity = Decimal("0"), Decimal("0")
+        if qty < 0 or equity <= 0:
+            session.events.emit(
+                "account/mismatch", "CRYPTO", "bot", self.name,
+                {
+                    "account_id": self.account_id,
+                    "order_id": order_id,
+                    "reason": f"invalid qty={qty} equity={equity}",
+                    "task_id": task["task_id"],
+                },
+            )
+            session.tasks.transition(task["task_id"], "FAILED")
+            return
+
+        session.events.emit(
+            "account/reconciled", "CRYPTO", "bot", self.name,
+            {
+                "account_id": self.account_id,
+                "order_id": order_id,
+                "symbol": signal.get("symbol"),
+                "quantity": str(qty),
+                "equity": str(equity),
+                "cash": str(match.get("cash")),
+                "reconciliation_version": match.get("reconciliation_version"),
+                "task_id": task["task_id"],
+                "reconciled_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        session.tasks.transition(task["task_id"], "RECONCILED")
+        session.memory.remember(
+            f"订单 {order_id} 已对账完成（RECONCILED）",
+            kind="account-reconciled", tags=[task["task_id"], order_id],
         )
 
     # ---- 新信号处理 ----
