@@ -67,6 +67,8 @@ def run_once(session: BotSession, agent: Agent) -> None:
             "bot/tick.finished", session.profile.market, "system", agent.name,
             {"bot": agent.name},
         )
+        from dsh_runtime.store import publish_outbox
+        publish_outbox()
 
 
 def run_forever(session: BotSession, agent: Agent, interval_seconds: float) -> None:

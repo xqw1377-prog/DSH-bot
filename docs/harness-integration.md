@@ -68,9 +68,10 @@
 
 ## 实盘前 P0 清单
 
-1. **事务 Outbox**：任务状态与待发送事件必须在同一数据库事务提交，
-   后台可靠发布。当前顺序（先持久化任务状态、后发射事件）在 Paper
-   场景安全（事件失败不丢任务），但事件本身可能丢失；
-   实盘前必须升级为 Outbox 模式。
+1. **Runtime Local Transactional Outbox**（仅 Runtime）：任务状态与
+   Runtime 事件写入同一 SQLite 事务的 `event_outbox`，提交后至少一次
+   发布到本库 `domain_events`。这不是全系统 Outbox 完成——Gateway、
+   Incident Center、Strategy Evolution 与跨服务投递仍未覆盖；`live`
+   继续禁用。
 2. PostgreSQL 迁移或 Gateway 单实例写入锁定（见 SQLite 边界附录）。
 3. 多节点部署与故障切换验证。

@@ -75,6 +75,26 @@ class TradeExecutionCore:
         self.mode = mode
         self.idempotency_prefix = idempotency_prefix
 
+    def _record(
+        self,
+        session: BotSession,
+        task_id: str,
+        target: str | None = None,
+        *,
+        event_type: str | None = None,
+        payload: dict | None = None,
+        **updates,
+    ) -> dict | None:
+        """任务状态与领域事件同一事务：只走 TaskStore.transition_with_event。"""
+        extra = []
+        if event_type is not None:
+            extra.append((
+                event_type, self.market.value, "bot", self.name, payload or {},
+            ))
+        return session.tasks.transition_with_event(
+            task_id, target, extra_events=extra, **updates
+        )
+
     def tick(self, session: BotSession) -> None:
         self._resume_pending_tasks(session)
         self._process_new_signals(session)
@@ -109,10 +129,10 @@ class TradeExecutionCore:
         ).total_seconds()
         if elapsed <= self.UNKNOWN_QUARANTINE_SECONDS:
             return False
-        session.tasks.transition(task["task_id"], "INCIDENT")
-        session.events.emit(
-            "incident/opened", self.market.value, "bot", self.name,
-            {
+        self._record(
+            session, task["task_id"], "INCIDENT",
+            event_type="incident/opened",
+            payload={
                 "task_id": task["task_id"],
                 "reason": "submission UNKNOWN beyond quarantine window",
                 "unknown_since": unknown_since,
@@ -148,10 +168,13 @@ class TradeExecutionCore:
             if task["status"] == "AWAITING_APPROVAL":
                 problem = self._revalidate(session, task, approval)
                 if problem is not None:
-                    session.tasks.transition(task["task_id"], "PRE_SUBMIT_FAILED")
-                    session.events.emit(
-                        "order/unknown", self.market.value, "bot", self.name,
-                        {"task_id": task["task_id"], "rejected_at_submit": problem},
+                    self._record(
+                        session, task["task_id"], "PRE_SUBMIT_FAILED",
+                        event_type="order/unknown",
+                        payload={
+                            "task_id": task["task_id"],
+                            "rejected_at_submit": problem,
+                        },
                     )
                     session.memory.remember(
                         f"任务 {task['task_id']} 执行前校验失败（不下单）: {problem}",
@@ -162,17 +185,19 @@ class TradeExecutionCore:
                 task = session.tasks.get(task["task_id"])
             self._submit(session, task)
         elif status == "REJECTED":
-            session.tasks.transition(task["task_id"], "REJECTED")
-            session.events.emit(
-                "approval/rejected", self.market.value, "bot", self.name,
-                {"approval_id": approval_id, "task_id": task["task_id"]},
+            self._record(
+                session, task["task_id"], "REJECTED",
+                event_type="approval/rejected",
+                payload={"approval_id": approval_id, "task_id": task["task_id"]},
             )
         elif status == "EXPIRED":
-            session.tasks.transition(task["task_id"], "EXPIRED")
-            session.events.emit(
-                "approval/rejected", self.market.value, "bot", self.name,
-                {"approval_id": approval_id, "task_id": task["task_id"],
-                 "reason": "approval expired"},
+            self._record(
+                session, task["task_id"], "EXPIRED",
+                event_type="approval/rejected",
+                payload={
+                    "approval_id": approval_id, "task_id": task["task_id"],
+                    "reason": "approval expired",
+                },
             )
 
     def _handle_approval_missing(self, session: BotSession, task: dict) -> None:
@@ -185,20 +210,24 @@ class TradeExecutionCore:
         audited = self._approval_creation_audited(approval_id)
 
         if locally_expired and audited:
-            session.tasks.transition(task["task_id"], "EXPIRED")
-            session.events.emit(
-                "approval/rejected", self.market.value, "bot", self.name,
-                {"approval_id": approval_id, "task_id": task["task_id"],
-                 "reason": "approval expired and purged (locally confirmed)"},
+            self._record(
+                session, task["task_id"], "EXPIRED",
+                event_type="approval/rejected",
+                payload={
+                    "approval_id": approval_id, "task_id": task["task_id"],
+                    "reason": "approval expired and purged (locally confirmed)",
+                },
             )
             return
 
-        session.tasks.transition(task["task_id"], "APPROVAL_UNKNOWN")
-        session.events.emit(
-            "incident/opened", self.market.value, "bot", self.name,
-            {"approval_id": approval_id, "task_id": task["task_id"],
-             "reason": "approval 404 but not locally confirmed expired",
-             "locally_expired": locally_expired, "creation_audited": audited},
+        self._record(
+            session, task["task_id"], "APPROVAL_UNKNOWN",
+            event_type="incident/opened",
+            payload={
+                "approval_id": approval_id, "task_id": task["task_id"],
+                "reason": "approval 404 but not locally confirmed expired",
+                "locally_expired": locally_expired, "creation_audited": audited,
+            },
         )
         session.memory.remember(
             f"审批 {approval_id} 查询 404 但无法本地确认过期"
@@ -359,12 +388,11 @@ class TradeExecutionCore:
             self._mark_submit_outcome(session, task, outcome, exc)
             return
 
-        session.tasks.transition(
-            task["task_id"], "SUBMITTED", order_id=result["order_id"]
-        )
-        session.events.emit(
-            "order/submitted", self.market.value, "bot", self.name,
-            {
+        self._record(
+            session, task["task_id"], "SUBMITTED",
+            order_id=result["order_id"],
+            event_type="order/submitted",
+            payload={
                 "order_id": result["order_id"],
                 "idempotency_key": intent.idempotency_key,
                 "market": self.market.value,
@@ -390,15 +418,22 @@ class TradeExecutionCore:
         payload["submit_phase"] = getattr(exc, "phase", None)
         if outcome == "SUBMISSION_UNKNOWN":
             payload.setdefault("submission_unknown_since", datetime.now(UTC).isoformat())
-        session.tasks.update_payload(task["task_id"], payload)
-        if current["status"] != outcome:
-            session.tasks.transition(task["task_id"], outcome)
+        extra = []
         if outcome == "SUBMISSION_UNKNOWN":
-            session.events.emit(
+            extra.append((
                 "order/unknown", self.market.value, "bot", self.name,
-                {"task_id": task["task_id"], "idempotency_key": task["idempotency_key"],
-                 "error": str(exc)},
-            )
+                {
+                    "task_id": task["task_id"],
+                    "idempotency_key": task["idempotency_key"],
+                    "error": str(exc),
+                },
+            ))
+        session.tasks.transition_with_event(
+            task["task_id"],
+            None if current["status"] == outcome else outcome,
+            extra_events=extra,
+            payload=payload,
+        )
         session.memory.remember(
             f"任务 {task['task_id']} 提交结果 {outcome}: {exc}",
             kind="error", tags=[task["task_id"], "submit-failed", outcome],
@@ -472,36 +507,42 @@ class TradeExecutionCore:
 
         order_status = status.get("status")
         if order_status == "CANCELLED":
-            session.tasks.transition(task["task_id"], "CANCELLED")
-            session.events.emit(
-                "order/cancelled", self.market.value, "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "market": self.market.value,
-                 "cancelled_at": datetime.now(UTC).isoformat()},
+            self._record(
+                session, task["task_id"], "CANCELLED",
+                event_type="order/cancelled",
+                payload={
+                    "task_id": task["task_id"], "order_id": order_id,
+                    "market": self.market.value,
+                    "cancelled_at": datetime.now(UTC).isoformat(),
+                },
             )
             return
         if order_status == "REJECTED":
-            session.tasks.transition(task["task_id"], "ORDER_REJECTED")
-            session.events.emit(
-                "order/unknown", self.market.value, "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "reason": "order rejected by venue"},
+            self._record(
+                session, task["task_id"], "ORDER_REJECTED",
+                event_type="order/unknown",
+                payload={
+                    "task_id": task["task_id"], "order_id": order_id,
+                    "reason": "order rejected by venue",
+                },
             )
             return
         if order_status == "PARTIALLY_FILLED":
-            if task["status"] != "PARTIALLY_FILLED":
-                session.tasks.transition(task["task_id"], "PARTIALLY_FILLED")
-            session.events.emit(
-                "order/filled", self.market.value, "bot", self.name,
-                {"task_id": task["task_id"], "order_id": order_id,
-                 "market": self.market.value,
-                 "symbol": status.get("symbol")
-                           or task["payload"].get("symbol"),
-                 "partial": True,
-                 "filled_quantity": str(status.get("filled_quantity") or "0"),
-                 "avg_price": str(status.get("avg_price") or "0"),
-                 "filled_at": status.get("filled_at")
-                              or datetime.now(UTC).isoformat()},
+            self._record(
+                session, task["task_id"],
+                None if task["status"] == "PARTIALLY_FILLED" else "PARTIALLY_FILLED",
+                event_type="order/filled",
+                payload={
+                    "task_id": task["task_id"], "order_id": order_id,
+                    "market": self.market.value,
+                    "symbol": status.get("symbol")
+                              or task["payload"].get("symbol"),
+                    "partial": True,
+                    "filled_quantity": str(status.get("filled_quantity") or "0"),
+                    "avg_price": str(status.get("avg_price") or "0"),
+                    "filled_at": status.get("filled_at")
+                                 or datetime.now(UTC).isoformat(),
+                },
             )
             return
         if order_status == "UNKNOWN":
@@ -518,12 +559,14 @@ class TradeExecutionCore:
             elapsed = (datetime.now(UTC)
                        - datetime.fromisoformat(unknown_since)).total_seconds()
             if elapsed > self.UNKNOWN_QUARANTINE_SECONDS:
-                session.tasks.transition(task["task_id"], "INCIDENT")
-                session.events.emit(
-                    "incident/opened", self.market.value, "bot", self.name,
-                    {"task_id": task["task_id"], "order_id": order_id,
-                     "reason": "order UNKNOWN beyond quarantine window",
-                     "unknown_since": unknown_since},
+                self._record(
+                    session, task["task_id"], "INCIDENT",
+                    event_type="incident/opened",
+                    payload={
+                        "task_id": task["task_id"], "order_id": order_id,
+                        "reason": "order UNKNOWN beyond quarantine window",
+                        "unknown_since": unknown_since,
+                    },
                 )
                 session.memory.remember(
                     f"订单 {order_id} UNKNOWN 超过 {self.UNKNOWN_QUARANTINE_SECONDS}s，"
@@ -536,9 +579,11 @@ class TradeExecutionCore:
                 session.tasks.transition(task["task_id"], "ACKNOWLEDGED")
             return
 
-        session.events.emit(
-            "order/filled", self.market.value, "bot", self.name,
-            {
+        self._record(
+            session, task["task_id"],
+            None if task["status"] == "FILLED" else "FILLED",
+            event_type="order/filled",
+            payload={
                 "order_id": order_id,
                 "market": self.market.value,
                 "symbol": status.get("symbol") or task["payload"].get("symbol"),
@@ -554,8 +599,6 @@ class TradeExecutionCore:
                 "task_id": task["task_id"],
             },
         )
-        if task["status"] != "FILLED":
-            session.tasks.transition(task["task_id"], "FILLED")
         session.memory.remember(
             f"订单 {order_id} 已成交",
             kind="order-filled", tags=[task["task_id"], order_id],
@@ -633,24 +676,27 @@ class TradeExecutionCore:
         if not verdict.matched:
             reconciliation["reconciliation_status"] = "MISMATCH"
             reconciliation["reason"] = "; ".join(verdict.reasons)
-            session.tasks.transition(
-                task["task_id"], "INCIDENT", reconciliation_status="MISMATCH"
-            )
-            session.events.emit(
-                "account/mismatch", self.market.value, "bot", self.name,
-                {k: reconciliation[k] for k in (
-                    "order_id", "task_id", "expected_quantity",
-                    "positions_quantity", "detail", "execution_status",
-                    "reconciliation_status", "numeric_problems", "reason",
-                ) if k in reconciliation},
-            )
-            session.events.emit(
-                "incident/opened", self.market.value, "bot", self.name,
-                {
-                    "task_id": task["task_id"],
-                    "order_id": order_id,
-                    "reason": reconciliation["reason"],
-                },
+            session.tasks.transition_with_event(
+                task["task_id"], "INCIDENT",
+                extra_events=[
+                    (
+                        "account/mismatch", self.market.value, "bot", self.name,
+                        {k: reconciliation[k] for k in (
+                            "order_id", "task_id", "expected_quantity",
+                            "positions_quantity", "detail", "execution_status",
+                            "reconciliation_status", "numeric_problems", "reason",
+                        ) if k in reconciliation},
+                    ),
+                    (
+                        "incident/opened", self.market.value, "bot", self.name,
+                        {
+                            "task_id": task["task_id"],
+                            "order_id": order_id,
+                            "reason": reconciliation["reason"],
+                        },
+                    ),
+                ],
+                reconciliation_status="MISMATCH",
             )
             session.memory.remember(
                 f"对账异常：订单 {order_id} {reconciliation['reason']}",
@@ -658,19 +704,20 @@ class TradeExecutionCore:
             )
             return
         reconciliation["reconciliation_status"] = "MATCHED"
-        session.events.emit(
-            "account/reconciled", self.market.value, "bot", self.name,
-            {k: reconciliation[k] for k in (
-                "order_id", "task_id", "execution_status",
-                "reconciliation_status", "symbol", "quantity",
-                "filled_quantity", "avg_price", "fees",
-                "positions_quantity", "available_quantity",
-                "frozen_quantity", "cash", "equity",
-                "reconciliation_version", "reconciled_at", "venue_as_of",
-            ) if k in reconciliation},
-        )
-        session.tasks.transition(
-            task["task_id"], "DONE", reconciliation_status="MATCHED"
+        session.tasks.transition_with_event(
+            task["task_id"], "DONE",
+            extra_events=[(
+                "account/reconciled", self.market.value, "bot", self.name,
+                {k: reconciliation[k] for k in (
+                    "order_id", "task_id", "execution_status",
+                    "reconciliation_status", "symbol", "quantity",
+                    "filled_quantity", "avg_price", "fees",
+                    "positions_quantity", "available_quantity",
+                    "frozen_quantity", "cash", "equity",
+                    "reconciliation_version", "reconciled_at", "venue_as_of",
+                ) if k in reconciliation},
+            )],
+            reconciliation_status="MATCHED",
         )
         session.memory.remember(
             f"订单 {order_id} 对账通过（{symbol} {verdict.details.get('filled_quantity')}）",
@@ -817,10 +864,11 @@ class TradeExecutionCore:
                 "signal_id": signal["signal_id"],
             },
         )
-        session.tasks.update_payload(
-            task_id, payload, idempotency_key=payload["idempotency_key"]
+        session.tasks.transition_with_event(
+            task_id, "PREVIEWED",
+            payload=payload,
+            idempotency_key=payload["idempotency_key"],
         )
-        session.tasks.transition(task_id, "PREVIEWED")
         return preview
 
     def _request_approval(self, session: BotSession, task_id: str,
@@ -846,21 +894,24 @@ class TradeExecutionCore:
         task_row = session.tasks.get(task_id)
         payload = dict(task_row["payload"])
         payload["approval_requested_at"] = datetime.now(UTC).isoformat()
-        session.tasks.update_payload(task_id, payload)
-        session.events.emit(
-            "approval/requested", self.market.value, "bot", self.name,
-            {
-                "approval_id": approval_id,
-                "market": self.market.value,
-                "requested_by_bot": self.name,
-                "subject_type": "order",
-                "subject_id": signal["signal_id"],
-                "requested_at": datetime.now(UTC).isoformat(),
-                "task_id": task_id,
-                "evidence_refs": [
-                    f"signal:{signal['signal_id']}",
-                    f"strategy:{signal['strategy_id']}@{signal['strategy_version']}",
-                ],
-            },
+        session.tasks.transition_with_event(
+            task_id, None,
+            extra_events=[(
+                "approval/requested", self.market.value, "bot", self.name,
+                {
+                    "approval_id": approval_id,
+                    "market": self.market.value,
+                    "requested_by_bot": self.name,
+                    "subject_type": "order",
+                    "subject_id": signal["signal_id"],
+                    "requested_at": datetime.now(UTC).isoformat(),
+                    "task_id": task_id,
+                    "evidence_refs": [
+                        f"signal:{signal['signal_id']}",
+                        f"strategy:{signal['strategy_id']}@{signal['strategy_version']}",
+                    ],
+                },
+            )],
+            payload=payload,
         )
         return approval_id
