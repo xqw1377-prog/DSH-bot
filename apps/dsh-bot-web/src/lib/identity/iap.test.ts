@@ -4,7 +4,7 @@ import { POST as decideApproval } from "@/app/api/approvals/[id]/decide/route";
 import { POST as emergencyStop } from "@/app/api/control/emergency-stop/route";
 import { GET as getProjection } from "@/app/api/projection/[...path]/route";
 import { resetJwksCacheForTests, setJwksTestHooks } from "@/lib/identity";
-import type { Jwk } from "./types";
+import { IAP_JWKS_CACHE_TTL_SECONDS, type Jwk } from "./types";
 
 const ISSUER = "https://iap.test";
 const AUDIENCE = "dsh-bot-console";
@@ -50,7 +50,7 @@ function signJwt(
     aud: AUDIENCE,
     sub: "user-1",
     iat: NOW_SEC,
-    exp: NOW_SEC + 300,
+    exp: NOW_SEC + 3600,
     groups: ["dsh-viewers"],
     ...claims,
   });
@@ -84,13 +84,16 @@ const IAP_ENV = {
   DSH_ENV: "production",
   DSH_IAP_ISSUER: ISSUER,
   DSH_IAP_AUDIENCE: AUDIENCE,
-  DSH_IAP_JWKS_URL: "http://jwks.test/jwks.json",
+  DSH_IAP_JWKS_URL: "https://jwks.test/jwks.json",
+  DSH_IAP_JWKS_ALLOWED_HOSTS: "jwks.test",
 };
 
 const savedEnv = { ...process.env };
 const realFetch = globalThis.fetch;
 let gatewayCalls = 0;
 let jwksCalls = 0;
+let currentNow = NOW_MS;
+let fetchedUrls: string[] = [];
 let jwksImpl: () => Promise<{ keys: Jwk[] }> = async () => ({
   keys: [KEY_A.publicJwk],
 });
@@ -120,12 +123,15 @@ beforeEach(() => {
   applyEnv();
   gatewayCalls = 0;
   jwksCalls = 0;
+  currentNow = NOW_MS;
+  fetchedUrls = [];
   jwksImpl = async () => ({ keys: [KEY_A.publicJwk] });
   resetJwksCacheForTests();
   setJwksTestHooks({
-    now: () => NOW_MS,
-    fetcher: async () => {
+    now: () => currentNow,
+    fetcher: async (url) => {
       jwksCalls += 1;
+      fetchedUrls.push(url);
       return jwksImpl();
     },
   });
@@ -167,9 +173,11 @@ describe("IAP Viewer BFF", () => {
     const wrongIss = signJwt(KEY_A, { iss: "https://evil.test" });
     const wrongAud = signJwt(KEY_A, { aud: "other-app" });
     const expired = signJwt(KEY_A, { exp: NOW_SEC - 120 });
+    const notYet = signJwt(KEY_A, { nbf: NOW_SEC + 120 });
+    const emptySub = signJwt(KEY_A, { sub: "   " });
     const noneAlg = unsignedJwt({ alg: "none", kid: "kid-a" }, {});
 
-    for (const token of [wrongSig, wrongIss, wrongAud, expired, noneAlg]) {
+    for (const token of [wrongSig, wrongIss, wrongAud, expired, notYet, emptySub, noneAlg]) {
       const response = await getProjection(projectionRequest(bearer(token)), {
         params: Promise.resolve({ path: ["v1", "health"] }),
       });
@@ -240,13 +248,14 @@ describe("IAP Viewer BFF", () => {
       params: Promise.resolve({ path: ["v1", "health"] }),
     });
     expect(cached.status).toBe(200);
-    expect(jwksCalls).toBe(2);
+    expect(jwksCalls).toBe(1);
 
     const unknown = await getProjection(
       projectionRequest(bearer(signJwt(KEY_B, {}))),
       { params: Promise.resolve({ path: ["v1", "health"] }) },
     );
-    expect(unknown.status).toBe(401);
+    expect(unknown.status).toBe(503);
+    expect(jwksCalls).toBe(2);
   });
 
   it("development 模拟身份不能在 production 启用", async () => {
@@ -292,5 +301,73 @@ describe("IAP Viewer BFF", () => {
       params: Promise.resolve({ path: ["v1", "health"] }),
     });
     expect(response.status).toBe(403);
+  });
+
+  it("未知 kid 最多强制刷新一次，JWKS 有文档仍未知则 401", async () => {
+    const response = await getProjection(
+      projectionRequest(bearer(signJwt(KEY_B, {}))),
+      { params: Promise.resolve({ path: ["v1", "health"] }) },
+    );
+    expect(response.status).toBe(401);
+    expect(jwksCalls).toBe(1);
+    expect(fetchedUrls).toEqual(["https://jwks.test/jwks.json"]);
+  });
+
+  it("缓存 Key 硬过期后即使 JWKS 不可达也不能继续使用", async () => {
+    const token = signJwt(KEY_A, {});
+    const first = await getProjection(projectionRequest(bearer(token)), {
+      params: Promise.resolve({ path: ["v1", "health"] }),
+    });
+    expect(first.status).toBe(200);
+
+    currentNow = NOW_MS + (IAP_JWKS_CACHE_TTL_SECONDS + 1) * 1000;
+    jwksImpl = async () => {
+      throw new Error("jwks unavailable");
+    };
+    const expiredCache = await getProjection(projectionRequest(bearer(token)), {
+      params: Promise.resolve({ path: ["v1", "health"] }),
+    });
+    expect(expiredCache.status).toBe(503);
+  });
+
+  it("Token 中的 jku/x5u 不能改写 JWKS 地址", async () => {
+    const token = signJwt(KEY_A, {}, {
+      jku: "https://evil.test/jwks.json",
+      x5u: "https://evil.test/cert.pem",
+      jwk: { kty: "RSA", kid: "forged" },
+    });
+    const response = await getProjection(projectionRequest(bearer(token)), {
+      params: Promise.resolve({ path: ["v1", "health"] }),
+    });
+    expect(response.status).toBe(200);
+    expect(fetchedUrls).toEqual(["https://jwks.test/jwks.json"]);
+  });
+
+  it("JWK 的 use/alg/kty 不匹配时拒绝", async () => {
+    jwksImpl = async () => ({
+      keys: [{ ...KEY_A.publicJwk, use: "enc" }],
+    });
+    const response = await getProjection(
+      projectionRequest(bearer(signJwt(KEY_A, {}))),
+      { params: Promise.resolve({ path: ["v1", "health"] }) },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("生产 JWKS 必须是 HTTPS 且主机在允许列表", async () => {
+    const token = signJwt(KEY_A, {});
+    applyEnv({ DSH_IAP_JWKS_URL: "http://jwks.test/jwks.json" });
+    const httpUrl = await getProjection(projectionRequest(bearer(token)), {
+      params: Promise.resolve({ path: ["v1", "health"] }),
+    });
+    expect(httpUrl.status).toBe(503);
+    expect(jwksCalls).toBe(0);
+
+    applyEnv({ DSH_IAP_JWKS_ALLOWED_HOSTS: "other.test" });
+    const badHost = await getProjection(projectionRequest(bearer(token)), {
+      params: Promise.resolve({ path: ["v1", "health"] }),
+    });
+    expect(badHost.status).toBe(503);
+    expect(jwksCalls).toBe(0);
   });
 });

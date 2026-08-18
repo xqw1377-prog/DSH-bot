@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
+import { isDevelopmentEnv } from "./env";
 import { groupsFromClaims, rolesFromGroups } from "./group-role-mapping";
 import { IapJwtError, verifyIapJwt } from "./jwt";
-import { identityNowMs, jwksCacheFor } from "./jwks";
+import {
+  identityNowMs,
+  jwksCacheFor,
+  JwksUnavailableError,
+  JwksUrlError,
+  UnknownKidError,
+  assertConfiguredJwksUrl,
+} from "./jwks";
 import type { Principal, ProjectRole } from "./types";
 
-export function isDevelopmentEnv(): boolean {
-  return process.env.DSH_ENV === "development";
-}
+export { isDevelopmentEnv };
 
 export function iapConfigured(): boolean {
   return Boolean(
@@ -73,6 +79,17 @@ export async function resolvePrincipal(
   const token = extractIapToken(request);
 
   if (configured) {
+    const jwksUrl = process.env.DSH_IAP_JWKS_URL as string;
+    try {
+      assertConfiguredJwksUrl(jwksUrl);
+    } catch {
+      return {
+        error: jsonError(
+          "identity fail-closed: production JWKS URL must be HTTPS and an allowed host",
+          503,
+        ),
+      };
+    }
     if (!token) {
       if (isDevelopmentEnv()) {
         const mock = developmentMockPrincipal();
@@ -83,7 +100,6 @@ export async function resolvePrincipal(
     try {
       const issuer = process.env.DSH_IAP_ISSUER as string;
       const audience = process.env.DSH_IAP_AUDIENCE as string;
-      const jwksUrl = process.env.DSH_IAP_JWKS_URL as string;
       const cache = jwksCacheFor(jwksUrl);
       const claims = await verifyIapJwt(token, {
         issuer,
@@ -93,7 +109,18 @@ export async function resolvePrincipal(
       });
       return { principal: principalFromClaims(claims) };
     } catch (error) {
-      if (error instanceof IapJwtError) {
+      if (error instanceof JwksUrlError) {
+        return {
+          error: jsonError(
+            "identity fail-closed: production JWKS URL must be HTTPS and an allowed host",
+            503,
+          ),
+        };
+      }
+      if (error instanceof JwksUnavailableError) {
+        return { error: jsonError("jwks unavailable", 503) };
+      }
+      if (error instanceof IapJwtError || error instanceof UnknownKidError) {
         return { error: jsonError(error.message, 401) };
       }
       return { error: jsonError("iap token rejected", 401) };

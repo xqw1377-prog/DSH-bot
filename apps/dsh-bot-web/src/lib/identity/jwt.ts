@@ -39,13 +39,49 @@ function parseJson(segment: string): Record<string, unknown> {
 function audienceMatches(claim: unknown, expected: string): boolean {
   if (typeof claim === "string") return claim === expected;
   if (Array.isArray(claim)) {
-    return claim.some((item) => item === expected);
+    return claim.length > 0 && claim.every((item) => item === expected);
   }
   return false;
 }
 
+function expectedKty(alg: string): string {
+  if (alg === "RS256") return "RSA";
+  if (alg === "ES256") return "EC";
+  return "";
+}
+
+function assertJwkMatches(jwk: Jwk, kid: string, alg: string): void {
+  if (jwk.kid !== kid) {
+    throw new IapJwtError("jwk kid mismatch");
+  }
+  if (jwk.use !== "sig") {
+    throw new IapJwtError("jwk use must be sig");
+  }
+  if (jwk.alg !== alg) {
+    throw new IapJwtError("jwk alg mismatch");
+  }
+  if (jwk.kty !== expectedKty(alg)) {
+    throw new IapJwtError("jwk kty mismatch");
+  }
+}
+
+/** 只用公钥字段验签，忽略 Token 里的 jku/x5u/jwk/jwks_uri。 */
+function publicVerifyKey(jwk: Jwk): JsonWebKey {
+  return {
+    kty: jwk.kty,
+    kid: jwk.kid,
+    alg: jwk.alg,
+    use: jwk.use,
+    n: jwk.n,
+    e: jwk.e,
+    crv: jwk.crv,
+    x: jwk.x,
+    y: jwk.y,
+  };
+}
+
 function verifySignature(alg: string, data: string, signature: Buffer, jwk: Jwk): boolean {
-  const key = createPublicKey({ key: jwk as JsonWebKey, format: "jwk" });
+  const key = createPublicKey({ key: publicVerifyKey(jwk), format: "jwk" });
   if (alg === "RS256") {
     const verifier = createVerify("RSA-SHA256");
     verifier.update(data);
@@ -64,7 +100,7 @@ export async function verifyIapJwt(
   options: {
     issuer: string;
     audience: string;
-    resolveKey: (kid: string) => Promise<Jwk | null>;
+    resolveKey: (kid: string) => Promise<Jwk>;
     now?: () => number;
     clockSkewSeconds?: number;
   },
@@ -83,10 +119,10 @@ export async function verifyIapJwt(
     throw new IapJwtError("kid required");
   }
 
+  // 不读取 header.jku / header.x5u / header.jwk / payload.jwks_uri。
+  // 公钥只来自服务端配置的 JWKS。
   const jwk = await options.resolveKey(header.kid);
-  if (!jwk) {
-    throw new IapJwtError("unknown signing key");
-  }
+  assertJwkMatches(jwk, header.kid, alg);
 
   const data = `${headerB64}.${payloadB64}`;
   const signature = decodeSegment(signatureB64 || "");
@@ -98,13 +134,13 @@ export async function verifyIapJwt(
   const nowSec = Math.floor((options.now ?? Date.now)() / 1000);
   const skew = options.clockSkewSeconds ?? IAP_CLOCK_SKEW_SECONDS;
 
-  if (payload.iss !== options.issuer) {
+  if (typeof payload.iss !== "string" || payload.iss !== options.issuer) {
     throw new IapJwtError("issuer mismatch");
   }
   if (!audienceMatches(payload.aud, options.audience)) {
     throw new IapJwtError("audience mismatch");
   }
-  if (typeof payload.sub !== "string" || !payload.sub) {
+  if (typeof payload.sub !== "string" || !payload.sub.trim()) {
     throw new IapJwtError("subject required");
   }
   if (typeof payload.exp !== "number") {
