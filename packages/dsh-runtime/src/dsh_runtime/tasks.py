@@ -76,24 +76,24 @@ class TaskStore:
         self._events = events
 
     def create(self, kind: str, subject_id: str, payload: dict) -> str:
-        from .store import _get
+        from .store import _get, transaction
 
         task_id = f"task-{self.bot}-{subject_id}"
-        _get().execute(
-            "INSERT OR IGNORE INTO bot_tasks"
-            " (task_id, bot, kind, status, subject_id, payload, created_at, updated_at)"
-            " VALUES (?, ?, ?, 'SIGNAL_RECEIVED', ?, ?, ?, ?)",
-            (task_id, self.bot, kind, subject_id,
-             json.dumps(payload, ensure_ascii=False),
-             datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
-        )
-        _get().commit()
-        if self._events is not None:
-            self._events.emit(
-                "bot/task.created", "GLOBAL", "bot", self.bot,
-                {"task_id": task_id, "kind": kind, "subject_id": subject_id,
-                 "bot": self.bot},
+        with transaction():
+            _get().execute(
+                "INSERT OR IGNORE INTO bot_tasks"
+                " (task_id, bot, kind, status, subject_id, payload, created_at, updated_at)"
+                " VALUES (?, ?, ?, 'SIGNAL_RECEIVED', ?, ?, ?, ?)",
+                (task_id, self.bot, kind, subject_id,
+                 json.dumps(payload, ensure_ascii=False),
+                 datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
             )
+            if self._events is not None:
+                self._events.emit(
+                    "bot/task.created", "GLOBAL", "bot", self.bot,
+                    {"task_id": task_id, "kind": kind, "subject_id": subject_id,
+                     "bot": self.bot},
+                )
         return task_id
 
     def get(self, task_id: str) -> dict | None:
@@ -137,17 +137,18 @@ class TaskStore:
         updates.update({k: v for k, v in fields.items() if v is not None})
         assignments = ", ".join(f"{k} = ?" for k in updates)
         params = list(updates.values()) + [task_id, self.bot]
-        _get().execute(
+        conn = _get()
+        conn.execute(
             f"UPDATE bot_tasks SET {assignments} WHERE task_id = ? AND bot = ?",
             params,
         )
-        _get().commit()
+        from .store import _commit_if_idle
+        _commit_if_idle(conn)
         result = self.get(task_id)
         assert result is not None
         return result
 
-    def transition(self, task_id: str, target: str, **updates) -> dict:
-        """单步推进任务状态并回写字段（approval_id/order_id 等）。"""
+    def _apply_transition(self, task_id: str, target: str, **updates) -> tuple[dict, dict]:
         from .store import _get
 
         task = self.get(task_id)
@@ -166,13 +167,55 @@ class TaskStore:
             f"UPDATE bot_tasks SET {assignments} WHERE task_id = ? AND bot = ?",
             params,
         )
-        _get().commit()
         result = self.get(task_id)
         assert result is not None
-        if self._events is not None:
-            self._events.emit(
-                "bot/task.transitioned", "GLOBAL", "bot", self.bot,
-                {"task_id": task_id, "from": task["status"], "to": target,
-                 "bot": self.bot},
-            )
+        return task, result
+
+    def _emit_transitioned(self, task_id: str, previous: str, target: str) -> None:
+        if self._events is None:
+            return
+        self._events.emit(
+            "bot/task.transitioned", "GLOBAL", "bot", self.bot,
+            {"task_id": task_id, "from": previous, "to": target, "bot": self.bot},
+        )
+
+    def transition(self, task_id: str, target: str, **updates) -> dict:
+        """单步推进任务状态；与 task.transitioned 同一事务。"""
+        from .store import transaction
+
+        with transaction():
+            previous, result = self._apply_transition(task_id, target, **updates)
+            self._emit_transitioned(task_id, previous["status"], target)
+        return result
+
+    def transition_with_event(
+        self,
+        task_id: str,
+        target: str,
+        event_type: str,
+        market: str,
+        actor_kind: str,
+        actor_id: str,
+        payload: dict,
+        extra_events: list[dict] | None = None,
+        **updates,
+    ) -> dict:
+        """任务状态 + 领域事件 + task.transitioned 同一事务入 outbox。"""
+        from .store import transaction
+
+        if self._events is None:
+            raise TaskError("transition_with_event requires EventLog")
+        extras = extra_events or []
+        self._events.validate(event_type, payload)
+        for extra in extras:
+            self._events.validate(extra["event_type"], extra["payload"])
+        with transaction():
+            previous, result = self._apply_transition(task_id, target, **updates)
+            self._emit_transitioned(task_id, previous["status"], target)
+            self._events.emit(event_type, market, actor_kind, actor_id, payload)
+            for extra in extras:
+                self._events.emit(
+                    extra["event_type"], extra["market"],
+                    extra["actor_kind"], extra["actor_id"], extra["payload"],
+                )
         return result
