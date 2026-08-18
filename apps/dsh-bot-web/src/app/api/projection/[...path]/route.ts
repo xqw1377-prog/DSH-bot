@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireViewer } from "@/lib/identity";
 
 export const dynamic = "force-dynamic";
 
@@ -28,14 +29,15 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ path: string[] }> },
 ) {
+  const auth = await requireViewer(request);
+  if ("error" in auth) return auth.error;
   const { path } = await context.params;
   return proxy(request, path);
 }
 
-export async function POST(
-  request: Request,
-  context: { params: Promise<{ path: string[] }> },
-) {
-  const { path } = await context.params;
-  return proxy(request, path);
+export async function POST() {
+  return NextResponse.json(
+    { detail: "projection BFF is read-only" },
+    { status: 405 },
+  );
 }

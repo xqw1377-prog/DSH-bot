@@ -30,21 +30,19 @@ export function writeActor():
   | { error: NextResponse } {
   const env = process.env.DSH_ENV || "production";
   if (env === "development") {
-    return { actor: process.env.DSH_DEV_USER || "dev-user" };
-  }
-  const sessionUser = process.env.DSH_SESSION_USER || "";
-  if (!sessionUser) {
     return {
-      error: NextResponse.json(
-        {
-          detail:
-            "write BFF fail-closed: production requires Session/SSO (DSH_SESSION_USER)",
-        },
-        { status: 503 },
-      ),
+      actor: process.env.DSH_DEV_USER || process.env.DSH_SESSION_USER || "dev-user",
     };
   }
-  return { actor: sessionUser };
+  return {
+    error: NextResponse.json(
+      {
+        detail:
+          "write BFF fail-closed: production requires IAP principal; DSH_SESSION_USER is development-only",
+      },
+      { status: 503 },
+    ),
+  };
 }
 
 export function assertCsrf(request: Request): NextResponse | null {
