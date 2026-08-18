@@ -12,8 +12,8 @@ from dsh_runtime import (
     publish_pending, reset, transaction,
 )
 from dsh_runtime.outbox import (
-    MAX_ATTEMPTS, OutboxPublishCrash, consume_event, dlq_rows,
-    pending_rows, publish_outbox, replay_event,
+    MAX_ATTEMPTS, OutboxPublishCrash, backoff_seconds, consume_event,
+    dlq_rows, pending_rows, publish_outbox, replay_audit_rows, replay_event,
 )
 from dsh_runtime.store import _get
 
@@ -82,37 +82,95 @@ def test_publish_visible_before_ack_is_idempotent():
     assert any(r["status"] == "CLAIMED" for r in rows)
 
     past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    conn.execute("UPDATE event_outbox SET lease_until = ?", (past,))
+    conn.execute("UPDATE event_outbox SET locked_until = ?", (past,))
     conn.commit()
-    publish_outbox(conn)
+    publish_outbox(conn, owner="pub-b")
     assert len(session.events.query("approval/requested")) == 1
     assert all(r["status"] == "PUBLISHED" for r in pending_rows(conn))
 
 
-def test_same_aggregate_publishes_in_sequence_order():
+def test_same_aggregate_sequence_constraint_and_failed_seq_blocks_next():
     session = _session()
     with transaction(publish=False):
         session.events.emit(
             "approval/requested", "CRYPTO", "bot", "t",
             _requested("s1", task_id="task-seq"),
         )
-        session.events.emit(
+        e2 = session.events.emit(
             "approval/requested", "CRYPTO", "bot", "t",
             _requested("s2", task_id="task-seq"),
         )
+        session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("s3", task_id="task-seq"),
+        )
     conn = _get()
+    rows = pending_rows(conn)
+    assert [(r["aggregate_id"], r["sequence"]) for r in rows] == [
+        ("task-seq", 1), ("task-seq", 2), ("task-seq", 3),
+    ]
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO event_outbox"
+            " (outbox_id, event_id, aggregate_id, sequence, event_type, occurred_at,"
+            "  market, actor_kind, actor_id, payload, status)"
+            " VALUES ('dup', 'dup-id', 'task-seq', 2, 'approval/requested',"
+            " '2026-01-01T00:00:00Z', 'CRYPTO', 'bot', 't', '{}', 'PENDING')"
+        )
+    conn.rollback()
+
     publish_outbox(conn, limit=1)
-    first = session.events.query("approval/requested")
-    assert [e["payload"]["approval_id"] for e in first] == ["appr-s1"]
-    publish_outbox(conn, limit=1)
-    both = session.events.query("approval/requested")
-    assert {e["payload"]["approval_id"] for e in both} == {"appr-s1", "appr-s2"}
+    assert [e["payload"]["approval_id"] for e in session.events.query("approval/requested")] == [
+        "appr-s1",
+    ]
+
+    t0 = datetime.now(UTC)
+    publish_outbox(
+        conn, fail_with=RuntimeError("seq-2-down"), fail_event_id=e2,
+        now=t0, limit=1,
+    )
+    seq2 = next(r for r in pending_rows(conn) if r["event_id"] == e2)
+    assert seq2["status"] == "PENDING"
+    assert seq2["attempts"] == 1
+    publish_outbox(conn, now=t0, limit=50)
+    published = {e["payload"]["approval_id"] for e in session.events.query("approval/requested")}
+    assert published == {"appr-s1"}
+    assert not any(
+        e["payload"]["approval_id"] == "appr-s3"
+        for e in session.events.query("approval/requested")
+    )
 
 
-def test_poison_message_goes_to_dlq_and_unblocks_later_sequence():
+def test_failed_aggregate_does_not_block_other_aggregates():
     session = _session()
     with transaction(publish=False):
+        e_poison = session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("poison", task_id="task-a"),
+        )
         session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("a2", task_id="task-a"),
+        )
+        session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("b1", task_id="task-b"),
+        )
+    conn = _get()
+    t0 = datetime.now(UTC)
+    publish_outbox(
+        conn, fail_with=RuntimeError("poison-a"), fail_event_id=e_poison,
+        now=t0, limit=50,
+    )
+    ids = {e["payload"]["approval_id"] for e in session.events.query("approval/requested")}
+    assert ids == {"appr-b1"}
+    assert "appr-a2" not in ids
+
+
+def test_backoff_then_dead_unblocks_later_sequence():
+    session = _session()
+    with transaction(publish=False):
+        e1 = session.events.emit(
             "approval/requested", "CRYPTO", "bot", "t", _requested("poison")
         )
         session.events.emit(
@@ -121,17 +179,28 @@ def test_poison_message_goes_to_dlq_and_unblocks_later_sequence():
     conn = _get()
     base = datetime.now(UTC)
     for i in range(MAX_ATTEMPTS):
+        now = base + timedelta(hours=i)
         publish_outbox(
             conn,
             fail_with=RuntimeError("poison"),
-            now=base + timedelta(hours=i),
+            fail_event_id=e1,
+            now=now,
             limit=1,
         )
+        row = next(r for r in pending_rows(conn) if r["event_id"] == e1)
+        assert row["attempts"] == i + 1
+        if i + 1 < MAX_ATTEMPTS:
+            assert row["status"] == "PENDING"
+            expected = now + timedelta(seconds=backoff_seconds(i + 1))
+            assert row["available_at"] == expected.isoformat()
+        else:
+            assert row["status"] == "DEAD"
+
     dead = dlq_rows(conn)
     assert len(dead) == 1
+    assert dead[0]["attempts"] == MAX_ATTEMPTS
     assert "poison" in (dead[0]["last_error"] or "")
-    metrics = outbox_metrics(conn)
-    assert metrics["outbox_failed_count"] >= 1
+    assert outbox_metrics(conn)["outbox_failed_count"] == 1
 
     publish_outbox(conn, now=base + timedelta(days=1))
     later = [
@@ -141,6 +210,7 @@ def test_poison_message_goes_to_dlq_and_unblocks_later_sequence():
     assert later
     incidents = session.events.query("incident/opened")
     assert any("poison message" in e["payload"]["reason"] for e in incidents)
+    assert outbox_metrics(conn)["outbox_failed_count"] == 1
 
 
 def test_lease_blocks_other_publisher_until_expiry():
@@ -153,7 +223,7 @@ def test_lease_blocks_other_publisher_until_expiry():
     future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     conn.execute(
         "UPDATE event_outbox SET status = 'CLAIMED', lease_owner = 'pub-a',"
-        " lease_until = ?",
+        " locked_until = ?",
         (future,),
     )
     conn.commit()
@@ -161,9 +231,12 @@ def test_lease_blocks_other_publisher_until_expiry():
     assert session.events.query("approval/requested") == []
 
     past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    conn.execute("UPDATE event_outbox SET lease_until = ?", (past,))
+    conn.execute("UPDATE event_outbox SET locked_until = ?", (past,))
     conn.commit()
     assert publish_outbox(conn, owner="pub-b") == 1
+    claimed = next(r for r in pending_rows(conn))
+    assert claimed["status"] == "PUBLISHED"
+    assert claimed["locked_until"] is None
     assert len(session.events.query("approval/requested")) == 1
 
 
@@ -213,8 +286,14 @@ def test_replay_and_consume_are_idempotent():
     conn = _get()
     assert consume_event(conn, event_id, "projection") is True
     assert consume_event(conn, event_id, "projection") is False
-    assert replay_event(conn, event_id) is True
+    assert replay_event(conn, event_id, actor="auditor") is True
+    assert replay_event(conn, event_id, actor="auditor") is True
     assert len(session.events.query("approval/requested")) == 1
+    assert consume_event(conn, event_id, "projection") is False
+    audits = replay_audit_rows(conn, event_id)
+    assert len(audits) == 2
+    assert {a["actor"] for a in audits} == {"auditor"}
+    assert all(a["event_id"] == event_id for a in audits)
 
 
 def test_schema_failure_rolls_back_task_and_outbox():
@@ -251,6 +330,21 @@ def test_outbox_down_does_not_write_domain_events(monkeypatch):
             "approval/requested", "CRYPTO", "bot", "t", _requested("nope")
         )
     assert session.events.query("approval/requested") == []
+
+
+def test_outbox_down_does_not_fallback_to_split_transition_emit(monkeypatch):
+    session = _session()
+    task_id = session.tasks.create("paper-order", "sig-no-obx", {"signal_id": "sig-no-obx"})
+    monkeypatch.setattr("dsh_runtime.store.outbox_ready", lambda _conn: False)
+    with pytest.raises(RuntimeError, match="refuse direct"):
+        session.tasks.transition_with_event(
+            task_id, "PREVIEWED",
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("split", task_id=task_id),
+        )
+    assert session.tasks.get(task_id)["status"] == "SIGNAL_RECEIVED"
+    assert session.events.query("approval/requested") == []
+    assert session.events.query("bot/task.transitioned") == []
 
 
 def test_old_sqlite_migrates_and_keeps_rows(tmp_path, monkeypatch):

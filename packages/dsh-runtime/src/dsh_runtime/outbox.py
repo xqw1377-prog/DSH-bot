@@ -46,9 +46,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             payload         TEXT NOT NULL,
             status          TEXT NOT NULL DEFAULT 'PENDING',
             attempts        INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at TEXT,
+            available_at    TEXT,
             lease_owner     TEXT,
-            lease_until     TEXT,
+            locked_until    TEXT,
             last_error      TEXT,
             published_at    TEXT,
             UNIQUE (aggregate_id, sequence)
@@ -72,8 +72,24 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             consumed_at TEXT NOT NULL,
             PRIMARY KEY (event_id, consumer)
         );
+        CREATE TABLE IF NOT EXISTS event_replay_audit (
+            replay_id   TEXT PRIMARY KEY,
+            event_id    TEXT NOT NULL,
+            replayed_at TEXT NOT NULL,
+            actor       TEXT NOT NULL
+        );
         """
     )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(event_outbox)").fetchall()}
+    if "next_attempt_at" in cols and "available_at" not in cols:
+        conn.execute(
+            "ALTER TABLE event_outbox RENAME COLUMN next_attempt_at TO available_at"
+        )
+    if "lease_until" in cols and "locked_until" not in cols:
+        conn.execute(
+            "ALTER TABLE event_outbox RENAME COLUMN lease_until TO locked_until"
+        )
+    conn.execute("UPDATE event_outbox SET status = 'DEAD' WHERE status = 'FAILED'")
     conn.commit()
 
 
@@ -117,7 +133,7 @@ def enqueue(
     conn.execute(
         "INSERT INTO event_outbox"
         " (outbox_id, event_id, aggregate_id, sequence, event_type, occurred_at,"
-        "  market, actor_kind, actor_id, payload, status, next_attempt_at)"
+        "  market, actor_kind, actor_id, payload, status, available_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)",
         (
             f"obx-{event_id}", event_id, aggregate_id, sequence, event_type,
@@ -134,12 +150,12 @@ def _eligible_sql() -> str:
         " occurred_at, market, actor_kind, actor_id, payload"
         " FROM event_outbox o"
         " WHERE o.status IN ('PENDING', 'CLAIMED')"
-        " AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)"
-        " AND (o.status = 'PENDING' OR o.lease_until IS NULL OR o.lease_until <= ?)"
+        " AND (o.available_at IS NULL OR o.available_at <= ?)"
+        " AND (o.status = 'PENDING' OR o.locked_until IS NULL OR o.locked_until <= ?)"
         " AND o.sequence = ("
         "   SELECT MIN(sequence) FROM event_outbox o2"
         "   WHERE o2.aggregate_id = o.aggregate_id"
-        "   AND o2.status NOT IN ('PUBLISHED', 'FAILED')"
+        "   AND o2.status NOT IN ('PUBLISHED', 'DEAD')"
         " )"
         " ORDER BY o.aggregate_id, o.sequence"
     )
@@ -150,18 +166,21 @@ def _claim(conn: sqlite3.Connection, outbox_id: str, owner: str, now: datetime) 
     now_iso = _iso(now)
     claimed = conn.execute(
         "UPDATE event_outbox SET status = 'CLAIMED', lease_owner = ?,"
-        " lease_until = ?, attempts = attempts + 1"
+        " locked_until = ?, attempts = attempts + 1"
         " WHERE outbox_id = ?"
         " AND status IN ('PENDING', 'CLAIMED')"
-        " AND (status = 'PENDING' OR lease_until IS NULL OR lease_until <= ?)",
+        " AND (status = 'PENDING' OR locked_until IS NULL OR locked_until <= ?)",
         (owner, until, outbox_id, now_iso),
     )
     return claimed.rowcount == 1
 
 
+def backoff_seconds(attempts: int) -> int:
+    return min(2 ** max(attempts, 0), MAX_BACKOFF_SECONDS)
+
+
 def _backoff_iso(attempts: int, now: datetime) -> str:
-    delay = min(2 ** max(attempts, 0), MAX_BACKOFF_SECONDS)
-    return _iso(now + timedelta(seconds=delay))
+    return _iso(now + timedelta(seconds=backoff_seconds(attempts)))
 
 
 def _move_to_dlq(conn: sqlite3.Connection, row: tuple, error: str, now: datetime) -> None:
@@ -173,8 +192,8 @@ def _move_to_dlq(conn: sqlite3.Connection, row: tuple, error: str, now: datetime
         (row[0], row[1], row[2], row[3], row[4], row[9], _iso(now), error, MAX_ATTEMPTS),
     )
     conn.execute(
-        "UPDATE event_outbox SET status = 'FAILED', last_error = ?,"
-        " lease_owner = NULL, lease_until = NULL WHERE outbox_id = ?",
+        "UPDATE event_outbox SET status = 'DEAD', last_error = ?,"
+        " lease_owner = NULL, locked_until = NULL WHERE outbox_id = ?",
         (error, row[0]),
     )
     incident_payload = {
@@ -201,6 +220,7 @@ def publish_outbox(
     skip_publish: bool | None = None,
     crash_after_publish: bool = False,
     fail_with: Exception | None = None,
+    fail_event_id: str | None = None,
 ) -> int:
     """认领 PENDING（含过期 lease）并至少一次写入 domain_events。"""
     if skip_publish is None:
@@ -230,7 +250,9 @@ def publish_outbox(
                 conn.execute("COMMIT")
                 try:
                     conn.execute("BEGIN IMMEDIATE")
-                    if fail_with is not None:
+                    if fail_with is not None and (
+                        fail_event_id is None or row[1] == fail_event_id
+                    ):
                         raise fail_with
                     conn.execute(
                         "INSERT OR IGNORE INTO domain_events"
@@ -259,7 +281,7 @@ def publish_outbox(
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     "UPDATE event_outbox SET status = 'PUBLISHED', published_at = ?,"
-                    " last_error = NULL, lease_owner = NULL, lease_until = NULL"
+                    " last_error = NULL, lease_owner = NULL, locked_until = NULL"
                     " WHERE outbox_id = ?",
                     (now_iso, row[0]),
                 )
@@ -288,16 +310,18 @@ def _record_publish_failure(
     else:
         conn.execute(
             "UPDATE event_outbox SET status = 'PENDING',"
-            " next_attempt_at = ?, last_error = ?,"
-            " lease_owner = NULL, lease_until = NULL"
+            " available_at = ?, last_error = ?,"
+            " lease_owner = NULL, locked_until = NULL"
             " WHERE outbox_id = ?",
             (_backoff_iso(n, now), str(exc), row[0]),
         )
     conn.execute("COMMIT")
 
 
-def replay_event(conn: sqlite3.Connection, event_id: str) -> bool:
-    """按 event_id 安全重放：domain_events 与消费记录均幂等。"""
+def replay_event(
+    conn: sqlite3.Connection, event_id: str, *, actor: str = "runtime-outbox"
+) -> bool:
+    """按 event_id 安全重放：domain_events / 消费记录幂等，并写重放审计。"""
     if not outbox_ready(conn):
         raise RuntimeError("outbox unavailable; refuse direct domain_events write")
     row = conn.execute(
@@ -322,6 +346,11 @@ def replay_event(conn: sqlite3.Connection, event_id: str) -> bool:
         " (event_id, consumer, consumed_at) VALUES (?, 'domain_events', ?)",
         (event_id, _iso()),
     )
+    conn.execute(
+        "INSERT INTO event_replay_audit (replay_id, event_id, replayed_at, actor)"
+        " VALUES (?, ?, ?, ?)",
+        (str(uuid4()), event_id, _iso(), actor),
+    )
     conn.commit()
     return True
 
@@ -339,7 +368,8 @@ def consume_event(conn: sqlite3.Connection, event_id: str, consumer: str) -> boo
 
 def pending_rows(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT event_id, event_type, status, aggregate_id, sequence, payload"
+        "SELECT event_id, event_type, status, aggregate_id, sequence, payload,"
+        " attempts, available_at, locked_until"
         " FROM event_outbox ORDER BY aggregate_id, sequence"
     ).fetchall()
     return [
@@ -347,8 +377,22 @@ def pending_rows(conn: sqlite3.Connection) -> list[dict]:
             "event_id": r[0], "event_type": r[1], "status": r[2],
             "aggregate_id": r[3], "sequence": r[4],
             "payload": json.loads(r[5]),
+            "attempts": r[6], "available_at": r[7], "locked_until": r[8],
         }
         for r in rows
+    ]
+
+
+def replay_audit_rows(conn: sqlite3.Connection, event_id: str | None = None) -> list[dict]:
+    sql = "SELECT replay_id, event_id, replayed_at, actor FROM event_replay_audit"
+    params: tuple = ()
+    if event_id is not None:
+        sql += " WHERE event_id = ?"
+        params = (event_id,)
+    sql += " ORDER BY replayed_at"
+    return [
+        {"replay_id": r[0], "event_id": r[1], "replayed_at": r[2], "actor": r[3]}
+        for r in conn.execute(sql, params).fetchall()
     ]
 
 
@@ -371,7 +415,7 @@ def outbox_metrics(conn: sqlite3.Connection) -> dict:
         " WHERE status IN ('PENDING', 'CLAIMED')"
     ).fetchone()
     failed = conn.execute(
-        "SELECT COUNT(*) FROM event_outbox WHERE status = 'FAILED'"
+        "SELECT COUNT(*) FROM event_outbox WHERE status = 'DEAD'"
     ).fetchone()
     oldest_seconds = None
     if pending and pending[1]:
