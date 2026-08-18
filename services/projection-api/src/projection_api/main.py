@@ -58,6 +58,14 @@ async def _proxy_evolution(path: str, params: dict | None = None):
     return await _proxy_get(STRATEGY_EVOLUTION_URL, path, params)
 
 
+@app.get("/v1/bots/overview")
+def get_bots_overview():
+    """三个 Bot 的六维只读状态。不触发资金动作。"""
+    from projection_api.overview import build_overview
+
+    return build_overview()
+
+
 @app.get("/v1/markets/{market}/health")
 async def get_health(market: str):
     return await _proxy_gateway(f"/v1/markets/{market}/health")

@@ -1,0 +1,9 @@
+import { MarketDrilldown } from "@/components/market-drilldown";
+import { requirePageViewer } from "@/lib/page-auth";
+
+export const dynamic = "force-dynamic";
+
+export default async function ASharePage() {
+  await requirePageViewer();
+  return <MarketDrilldown market="A_SHARE" title="A 股 Bot" bot="a-stock-bot" />;
+}

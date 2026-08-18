@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { AccountSummary, Market, Position } from "@dsh-bot/client-sdk";
+import { requirePageViewer } from "@/lib/page-auth";
 import { projection } from "@/lib/projection";
 
 // 行情与持仓必须实时获取，不能静态预渲染出陈旧数据。
@@ -15,6 +16,7 @@ export default async function PortfolioPage({
 }: {
   searchParams: Promise<{ market?: string }>;
 }) {
+  await requirePageViewer();
   const params = await searchParams;
   const market: Market = params.market === "CRYPTO" ? "CRYPTO" : "A_SHARE";
 

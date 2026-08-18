@@ -11,8 +11,8 @@ const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   control_action: "控制动作",
 };
 
-/** 审批列表走投影；决定走 BFF，decided_by 由服务端生成。 */
-export function ApprovalsPanel() {
+/** 审批列表走投影；决定走 BFF。控件能力来自服务端 Principal。 */
+export function ApprovalsPanel({ canDecide }: { canDecide: boolean }) {
   const [approvals, setApprovals] = useState<Approval[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [decidingId, setDecidingId] = useState<string | null>(null);
@@ -40,6 +40,7 @@ export function ApprovalsPanel() {
   }, []);
 
   async function decide(id: string, decision: "APPROVED" | "REJECTED") {
+    if (!canDecide) return;
     setDecidingId(id);
     setError(null);
     try {
@@ -73,6 +74,11 @@ export function ApprovalsPanel() {
   return (
     <section>
       {error && <p style={{ color: "red" }}>{error}</p>}
+      {!canDecide && (
+        <p data-testid="approver-required" style={{ color: "#6b7280" }}>
+          需要 Approver 才能批准或拒绝。当前 Viewer 只能查看。
+        </p>
+      )}
       {approvals === null ? (
         <p>加载中…</p>
       ) : approvals.length === 0 && !error ? (
@@ -104,16 +110,20 @@ export function ApprovalsPanel() {
               )}
               <div style={{ display: "flex", gap: 8 }}>
                 <button
-                  disabled={decidingId !== null}
+                  type="button"
+                  disabled={!canDecide || decidingId !== null}
+                  data-testid="approve-button"
                   onClick={() => void decide(a.approval_id, "APPROVED")}
-                  style={buttonStyle("#16a34a")}
+                  style={buttonStyle("#16a34a", !canDecide)}
                 >
                   批准
                 </button>
                 <button
-                  disabled={decidingId !== null}
+                  type="button"
+                  disabled={!canDecide || decidingId !== null}
+                  data-testid="reject-button"
                   onClick={() => void decide(a.approval_id, "REJECTED")}
-                  style={buttonStyle("#dc2626")}
+                  style={buttonStyle("#dc2626", !canDecide)}
                 >
                   拒绝
                 </button>
@@ -126,13 +136,13 @@ export function ApprovalsPanel() {
   );
 }
 
-function buttonStyle(color: string) {
+function buttonStyle(color: string, disabled = false) {
   return {
     padding: "6px 16px",
     borderRadius: 6,
     border: "none",
-    backgroundColor: color,
+    backgroundColor: disabled ? "#9ca3af" : color,
     color: "#ffffff",
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
   };
 }

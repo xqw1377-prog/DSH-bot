@@ -159,3 +159,131 @@ def test_experiments_proxied_to_evolution(mock_upstream):
     mock_upstream["handler"] = handler
     client.get("/v1/experiments")
     assert ":8002" in seen["url"]
+
+
+def _health(fresh: bool, **extra):
+    body = {
+        "system_ok": extra.get("system_ok", True),
+        "data_fresh": fresh,
+        "trading_channel_ok": extra.get("trading_channel_ok", True),
+        "clock_skew_ms": extra.get("clock_skew_ms", 3),
+        "degraded": extra.get("degraded", False),
+        "detail": extra.get("detail", "ok"),
+        "as_of": "2026-08-18T00:00:00+00:00",
+    }
+    return body
+
+
+def test_bots_overview_three_cards_and_mixed_mode(monkeypatch):
+    monkeypatch.setenv("DSH_CRYPTO_MODE", "paper")
+    monkeypatch.setenv("DSH_A_SHARE_MODE", "shadow")
+    monkeypatch.setattr(projection_main, "get_bot_tasks", lambda: [])
+    monkeypatch.setattr(projection_main, "get_incidents", lambda limit=50: [])
+
+    def fetch(path: str):
+        if "CRYPTO/health" in path:
+            return _health(True)
+        if "A_SHARE/health" in path:
+            return _health(True)
+        if "approvals" in path:
+            return [{"status": "REQUESTED", "market": "CRYPTO"}]
+        return None
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch)
+    ids = [b["bot_id"] for b in body["bots"]]
+    assert ids == ["market-chief", "crypto", "a-share"]
+    assert body["global_mode"] == "MIXED"
+    assert body["live_anomaly"] is False
+    chief = body["bots"][0]
+    assert chief["read_only"] is True
+    assert chief["order"] == "NONE"
+    crypto = body["bots"][1]
+    assert crypto["mode"] == "PAPER"
+    assert crypto["counts"]["pending_approvals"] == 1
+    assert body["bots"][2]["mode"] == "SHADOW"
+
+
+def test_bots_overview_stale_not_fresh(monkeypatch):
+    monkeypatch.setattr(projection_main, "get_bot_tasks", lambda: [])
+    monkeypatch.setattr(projection_main, "get_incidents", lambda limit=50: [])
+
+    def fetch(path: str):
+        if "CRYPTO/health" in path:
+            return _health(False)
+        if "A_SHARE/health" in path:
+            return _health(True)
+        return []
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch)
+    crypto = next(b for b in body["bots"] if b["bot_id"] == "crypto")
+    assert crypto["data"] == "STALE"
+    assert crypto["data"] != "FRESH"
+    assert any("STALE" in a for a in body["alerts"])
+
+
+def test_bots_overview_halted_and_unknown_alert(monkeypatch):
+    monkeypatch.setattr(
+        projection_main,
+        "get_bot_tasks",
+        lambda: [
+            {
+                "bot": "crypto-bot",
+                "status": "SUBMISSION_UNKNOWN",
+                "reconciliation_status": "PENDING",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        projection_main,
+        "get_incidents",
+        lambda limit=50: [
+            {
+                "event_type": "kill_switch/succeeded",
+                "market": "CRYPTO",
+                "occurred_at": "2026-08-18T00:00:00+00:00",
+            }
+        ],
+    )
+
+    def fetch(path: str):
+        if "CRYPTO/health" in path:
+            return _health(
+                True,
+                system_ok=False,
+                trading_channel_ok=False,
+                detail="emergency stop engaged",
+            )
+        if "A_SHARE/health" in path:
+            return _health(True)
+        return []
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch)
+    crypto = next(b for b in body["bots"] if b["bot_id"] == "crypto")
+    assert crypto["risk"] == "HALTED"
+    assert crypto["order"] == "UNKNOWN"
+    assert any("HALTED" in a for a in body["alerts"])
+    assert any("UNKNOWN" in a for a in body["alerts"])
+
+
+def test_bots_overview_live_is_anomaly_not_global_live(monkeypatch):
+    monkeypatch.setenv("DSH_CRYPTO_MODE", "live")
+    monkeypatch.setenv("DSH_A_SHARE_MODE", "paper")
+    monkeypatch.setattr(projection_main, "get_bot_tasks", lambda: [])
+    monkeypatch.setattr(projection_main, "get_incidents", lambda limit=50: [])
+
+    def fetch(path: str):
+        return _health(True) if "health" in path else []
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch)
+    assert body["live_anomaly"] is True
+    assert body["global_mode"] != "LIVE"
+    assert any("LIVE" in a for a in body["alerts"])
+

@@ -1,9 +1,11 @@
 import type { BotTask } from "@dsh-bot/client-sdk";
+import { requirePageViewer } from "@/lib/page-auth";
 import { projection } from "@/lib/projection";
 
 export const dynamic = "force-dynamic";
 
 export default async function TasksPage() {
+  await requirePageViewer();
   const tasks = await projection.getBotTasks().catch(() => null);
 
   return (
