@@ -78,6 +78,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             replayed_at TEXT NOT NULL,
             actor       TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS event_outbox_resolution (
+            resolution_id TEXT PRIMARY KEY,
+            event_id      TEXT,
+            aggregate_id  TEXT NOT NULL,
+            action        TEXT NOT NULL,
+            actor         TEXT NOT NULL,
+            resolved_at   TEXT NOT NULL
+        );
         """
     )
     cols = {r[1] for r in conn.execute("PRAGMA table_info(event_outbox)").fetchall()}
@@ -155,7 +163,7 @@ def _eligible_sql() -> str:
         " AND o.sequence = ("
         "   SELECT MIN(sequence) FROM event_outbox o2"
         "   WHERE o2.aggregate_id = o.aggregate_id"
-        "   AND o2.status NOT IN ('PUBLISHED', 'DEAD')"
+        "   AND o2.status NOT IN ('PUBLISHED', 'SKIPPED', 'TERMINATED')"
         " )"
         " ORDER BY o.aggregate_id, o.sequence"
     )
@@ -198,9 +206,7 @@ def _move_to_dlq(conn: sqlite3.Connection, row: tuple, error: str, now: datetime
     )
     incident_payload = {
         "reason": f"runtime outbox poison message {row[1]} ({row[4]})",
-        "task_id": json.loads(row[9]).get("task_id") if row[9] else None,
     }
-    incident_payload = {k: v for k, v in incident_payload.items() if v is not None}
     enqueue(
         conn,
         event_type="incident/opened",
@@ -351,8 +357,103 @@ def replay_event(
         " VALUES (?, ?, ?, ?)",
         (str(uuid4()), event_id, _iso(), actor),
     )
+    dead = conn.execute(
+        "SELECT aggregate_id FROM event_outbox WHERE event_id = ? AND status = 'DEAD'",
+        (event_id,),
+    ).fetchone()
+    if dead:
+        conn.execute(
+            "UPDATE event_outbox SET status = 'PUBLISHED', published_at = ?,"
+            " last_error = NULL, lease_owner = NULL, locked_until = NULL"
+            " WHERE event_id = ? AND status = 'DEAD'",
+            (_iso(), event_id),
+        )
+        _record_resolution(
+            conn, event_id=event_id, aggregate_id=dead[0],
+            action="replay", actor=actor,
+        )
     conn.commit()
     return True
+
+
+def skip_dead(conn: sqlite3.Connection, event_id: str, *, actor: str) -> bool:
+    """人工跳过 DEAD 行，带审计；之后同 aggregate 后续 sequence 才可发布。"""
+    if not outbox_ready(conn):
+        raise RuntimeError("outbox unavailable; refuse direct domain_events write")
+    row = conn.execute(
+        "SELECT aggregate_id, status FROM event_outbox WHERE event_id = ?",
+        (event_id,),
+    ).fetchone()
+    if row is None or row[1] != "DEAD":
+        return False
+    conn.execute(
+        "UPDATE event_outbox SET status = 'SKIPPED', lease_owner = NULL,"
+        " locked_until = NULL WHERE event_id = ? AND status = 'DEAD'",
+        (event_id,),
+    )
+    _record_resolution(
+        conn, event_id=event_id, aggregate_id=row[0], action="skip", actor=actor,
+    )
+    conn.commit()
+    return True
+
+
+def terminate_aggregate(
+    conn: sqlite3.Connection, aggregate_id: str, *, actor: str, event_id: str | None = None
+) -> int:
+    """人工终止整个 aggregate，带审计；剩余未发布行不再投递。"""
+    if not outbox_ready(conn):
+        raise RuntimeError("outbox unavailable; refuse direct domain_events write")
+    cur = conn.execute(
+        "UPDATE event_outbox SET status = 'TERMINATED', lease_owner = NULL,"
+        " locked_until = NULL"
+        " WHERE aggregate_id = ?"
+        " AND status NOT IN ('PUBLISHED', 'SKIPPED', 'TERMINATED')",
+        (aggregate_id,),
+    )
+    _record_resolution(
+        conn, event_id=event_id, aggregate_id=aggregate_id,
+        action="terminate", actor=actor,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def _record_resolution(
+    conn: sqlite3.Connection,
+    *,
+    event_id: str | None,
+    aggregate_id: str,
+    action: str,
+    actor: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO event_outbox_resolution"
+        " (resolution_id, event_id, aggregate_id, action, actor, resolved_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (str(uuid4()), event_id, aggregate_id, action, actor, _iso()),
+    )
+
+
+def resolution_rows(
+    conn: sqlite3.Connection, aggregate_id: str | None = None
+) -> list[dict]:
+    sql = (
+        "SELECT resolution_id, event_id, aggregate_id, action, actor, resolved_at"
+        " FROM event_outbox_resolution"
+    )
+    params: tuple = ()
+    if aggregate_id is not None:
+        sql += " WHERE aggregate_id = ?"
+        params = (aggregate_id,)
+    sql += " ORDER BY resolved_at"
+    return [
+        {
+            "resolution_id": r[0], "event_id": r[1], "aggregate_id": r[2],
+            "action": r[3], "actor": r[4], "resolved_at": r[5],
+        }
+        for r in conn.execute(sql, params).fetchall()
+    ]
 
 
 def consume_event(conn: sqlite3.Connection, event_id: str, consumer: str) -> bool:

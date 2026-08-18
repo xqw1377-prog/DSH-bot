@@ -38,7 +38,9 @@ Transactional Outbox 里程碑在 Runtime 合并后保持开启。
 ## 顺序
 
 `UNIQUE (aggregate_id, sequence)`。同一 task（`payload.task_id`）按 1 → 2 → 3 投递。
-seq N 仍为 PENDING/CLAIMED 时，seq N+1 不可发布。seq N 进入 `DEAD` 后解除阻塞。
+seq N 仍为 PENDING/CLAIMED/**DEAD** 时，seq N+1 不可发布。
+进 DLQ / 标 `DEAD` **不会**自动越过后续 sequence。
+必须由人工执行带审计的 `replay` / `skip` / `terminate` 后，后续行才分别变为可发布、被跳过或整链终止。
 不同 `aggregate_id` 互不阻塞。
 
 ## Publisher 崩溃恢复
@@ -61,16 +63,19 @@ seq N 仍为 PENDING/CLAIMED 时，seq N+1 不可发布。seq N 进入 `DEAD` �
 - 每次认领 `attempts += 1`。
 - 失败后 `available_at = now + min(2^attempts, 60)s`。
 - 达到 `MAX_ATTEMPTS`（5）进入 `DEAD`，并写入 `event_outbox_dlq`。
-- 一条毒消息不能永久阻塞其他 aggregate；同 aggregate 的后续 sequence 在本条 `DEAD` 后可继续。
+- 一条毒消息不能永久阻塞**其他** aggregate。
+- 同 aggregate 的后续 sequence 在本条 `DEAD` 后继续阻塞，直到人工 `replay` / `skip` / `terminate`。
 - `outbox_failed_count` 等于 `status = 'DEAD'` 的行数。
 
 ## 安全重放
 
-按 `event_id` 重放：
+重放接口只接收 `event_id`（加审计 `actor`），从不可变 Outbox / `domain_events` 行读取原 payload。
+调用方不能提交新 payload，因此不存在 `event_id + 不同 payload_hash` 的覆盖路径。
 
 - `domain_events` 用 `INSERT OR IGNORE`，不出现第二条。
 - `event_consumption(event_id, consumer)` 使消费端第二次返回 False。
 - 每次重放写入 `event_replay_audit`。
+- 对 `DEAD` 行的重放会把它标为 `PUBLISHED`，并写入 `event_outbox_resolution(action=replay)`，之后后续 sequence 才可继续。
 
 ## 指标
 

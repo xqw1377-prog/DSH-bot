@@ -14,6 +14,7 @@ from dsh_runtime import (
 from dsh_runtime.outbox import (
     MAX_ATTEMPTS, OutboxPublishCrash, backoff_seconds, consume_event,
     dlq_rows, pending_rows, publish_outbox, replay_audit_rows, replay_event,
+    resolution_rows, skip_dead, terminate_aggregate,
 )
 from dsh_runtime.store import _get
 
@@ -167,14 +168,20 @@ def test_failed_aggregate_does_not_block_other_aggregates():
     assert "appr-a2" not in ids
 
 
-def test_backoff_then_dead_unblocks_later_sequence():
+def test_backoff_then_dead_keeps_later_sequence_blocked():
     session = _session()
     with transaction(publish=False):
         e1 = session.events.emit(
-            "approval/requested", "CRYPTO", "bot", "t", _requested("poison")
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("poison", task_id="task-dead"),
         )
         session.events.emit(
-            "approval/requested", "CRYPTO", "bot", "t", _requested("later")
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("later", task_id="task-dead"),
+        )
+        session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("other", task_id="task-other"),
         )
     conn = _get()
     base = datetime.now(UTC)
@@ -185,7 +192,7 @@ def test_backoff_then_dead_unblocks_later_sequence():
             fail_with=RuntimeError("poison"),
             fail_event_id=e1,
             now=now,
-            limit=1,
+            limit=50,
         )
         row = next(r for r in pending_rows(conn) if r["event_id"] == e1)
         assert row["attempts"] == i + 1
@@ -199,18 +206,102 @@ def test_backoff_then_dead_unblocks_later_sequence():
     dead = dlq_rows(conn)
     assert len(dead) == 1
     assert dead[0]["attempts"] == MAX_ATTEMPTS
-    assert "poison" in (dead[0]["last_error"] or "")
     assert outbox_metrics(conn)["outbox_failed_count"] == 1
 
     publish_outbox(conn, now=base + timedelta(days=1))
-    later = [
-        e for e in session.events.query("approval/requested")
-        if e["payload"]["approval_id"] == "appr-later"
-    ]
-    assert later
+    ids = {e["payload"]["approval_id"] for e in session.events.query("approval/requested")}
+    assert "appr-later" not in ids
+    assert "appr-other" in ids
     incidents = session.events.query("incident/opened")
     assert any("poison message" in e["payload"]["reason"] for e in incidents)
     assert outbox_metrics(conn)["outbox_failed_count"] == 1
+
+
+def test_dead_unblocks_only_after_audited_skip():
+    session = _session()
+    with transaction(publish=False):
+        e1 = session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("poison", task_id="task-skip"),
+        )
+        session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("later", task_id="task-skip"),
+        )
+    conn = _get()
+    base = datetime.now(UTC)
+    for i in range(MAX_ATTEMPTS):
+        publish_outbox(
+            conn, fail_with=RuntimeError("poison"), fail_event_id=e1,
+            now=base + timedelta(hours=i), limit=1,
+        )
+    assert skip_dead(conn, e1, actor="operator") is True
+    publish_outbox(conn, now=base + timedelta(days=1))
+    ids = {e["payload"]["approval_id"] for e in session.events.query("approval/requested")}
+    assert "appr-later" in ids
+    actions = [r["action"] for r in resolution_rows(conn, "task-skip")]
+    assert actions == ["skip"]
+
+
+def test_dead_unblocks_only_after_audited_replay():
+    session = _session()
+    with transaction(publish=False):
+        e1 = session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("poison", task_id="task-replay"),
+        )
+        session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("later", task_id="task-replay"),
+        )
+    conn = _get()
+    base = datetime.now(UTC)
+    for i in range(MAX_ATTEMPTS):
+        publish_outbox(
+            conn, fail_with=RuntimeError("poison"), fail_event_id=e1,
+            now=base + timedelta(hours=i), limit=1,
+        )
+    assert replay_event(conn, e1, actor="operator") is True
+    assert len([
+        e for e in session.events.query("approval/requested")
+        if e["payload"]["approval_id"] == "appr-poison"
+    ]) == 1
+    publish_outbox(conn, now=base + timedelta(days=1))
+    ids = {e["payload"]["approval_id"] for e in session.events.query("approval/requested")}
+    assert {"appr-poison", "appr-later"} <= ids
+    actions = [r["action"] for r in resolution_rows(conn, "task-replay")]
+    assert actions == ["replay"]
+
+
+def test_terminate_aggregate_stops_remaining_sequences():
+    session = _session()
+    with transaction(publish=False):
+        e1 = session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("poison", task_id="task-term"),
+        )
+        session.events.emit(
+            "approval/requested", "CRYPTO", "bot", "t",
+            _requested("later", task_id="task-term"),
+        )
+    conn = _get()
+    base = datetime.now(UTC)
+    for i in range(MAX_ATTEMPTS):
+        publish_outbox(
+            conn, fail_with=RuntimeError("poison"), fail_event_id=e1,
+            now=base + timedelta(hours=i), limit=1,
+        )
+    assert terminate_aggregate(conn, "task-term", actor="operator", event_id=e1) >= 1
+    publish_outbox(conn, now=base + timedelta(days=1))
+    ids = {e["payload"]["approval_id"] for e in session.events.query("approval/requested")}
+    assert "appr-later" not in ids
+    actions = [r["action"] for r in resolution_rows(conn, "task-term")]
+    assert actions == ["terminate"]
+    assert all(
+        r["status"] == "TERMINATED"
+        for r in pending_rows(conn)
+        if r["aggregate_id"] == "task-term"
+    )
 
 
 def test_lease_blocks_other_publisher_until_expiry():
