@@ -1,8 +1,8 @@
 # Identity 信任模型
 
-里程碑：[Identity/IAP](https://github.com/xqw1377-prog/DSH-bot/milestone/3)。
-本文只定义信任边界与失败关闭，**不包含认证实现**。
-实现必须另开 PR，且须先形成文末三项 ADR。
+里程碑：[Identity/IAP](https://github.com/xqw1377-prog/DSH-bot/milestone/3) **保持开启**。
+本文是身份**设计基线**，不包含认证实现，**不表示** Identity/IAP 里程碑完成。
+实现必须另开 PR，且须先合并文末三项 ADR。
 
 基线文档 `docs/security/security-gap-efadc53.md` 不在本 PR 修改。
 本分支不改 Runtime Outbox，不打开 `live`。
@@ -134,21 +134,22 @@ Crypto / A 股 Bot 可经 Gateway `submit_order`，禁止 `decide_approval` 与�
 
 ## 必须先形成 ADR 的三件事
 
-实现 PR 开工前，下列三项各自写一份 ADR 并合并。本文只列选项，**不选定**。
+状态：**`PROPOSED/UNDECIDED`**。本设计基线只列选项，**不选定**。
+实现 PR 开工前，下列三项必须各自成文并合并为 Accepted ADR。
 
-### ADR-1：浏览器如何登录
+### ADR-1：浏览器如何登录 — `PROPOSED/UNDECIDED`
 
 - A：IAP 向 BFF 传递**已签名 JWT**（BFF 验 JWKS，不自己跑授权码）。
 - B：BFF **自己完成 OIDC 登录**（授权码 + PKCE），IAP 只做 TLS / 入口。
 
-### ADR-2：BFF 如何把用户 actor 传给 Gateway
+### ADR-2：BFF 如何把用户 actor 传给 Gateway — `PROPOSED/UNDECIDED`
 
 - A：短期签名 JWT（`iss=bff`，`sub=用户 subject`，短 TTL，Gateway 验 BFF JWKS）。
 - B：仅在受保护内网链路上使用可信 Header（代理保证浏览器到不了 Gateway）。
 
 无论选哪条，服务身份仍是独立凭证，不能用 actor JWT 代替 API Key。
 
-### ADR-3：角色从哪来
+### ADR-3：角色从哪来 — `PROPOSED/UNDECIDED`
 
 - A：SSO Group
 - B：IAP Policy

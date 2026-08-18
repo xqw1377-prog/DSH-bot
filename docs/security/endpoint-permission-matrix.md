@@ -1,6 +1,7 @@
 # 端点权限矩阵
 
 配合 `docs/security/identity-trust-model.md`。
+Identity/IAP 里程碑**保持开启**；三项传输 ADR 仍为 `PROPOSED/UNDECIDED`。
 浏览器只打 IAP 与 Next BFF。Gateway / Projection / Incident / Evolution / 量化系统对浏览器不可达。
 
 列含义：
