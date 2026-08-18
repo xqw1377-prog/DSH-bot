@@ -1,9 +1,12 @@
 import { ChatPanel } from "@/components/chat-panel";
+import { requirePageViewer } from "@/lib/page-auth";
 
-// 对话上下文不缓存，避免陈旧会话。
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
 
-export default function ChatPage() {
+export default async function ChatPage() {
+  await requirePageViewer();
   return (
     <main style={{ padding: 24 }}>
       <h1>Chief Chat</h1>

@@ -1,8 +1,11 @@
 import type { Experiment, StrategyCandidate, StrategyStage } from "@dsh-bot/client-sdk";
+import { requirePageViewer } from "@/lib/page-auth";
 import { projection } from "@/lib/projection";
 
 // 实验与候选状态必须实时获取。
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
 
 /** 晋级主链：stage 推进必须附带证据引用，见 PRD 附录 A.1。 */
 const MAIN_CHAIN: StrategyStage[] = [
@@ -40,6 +43,7 @@ const TASK_STATUS_LABELS: Record<Experiment["status"], string> = {
 };
 
 export default async function StrategyLabPage() {
+  await requirePageViewer();
   const [experiments, candidates] = await Promise.all([
     projection.getExperiments().catch(() => null),
     projection.getCandidates().catch(() => null),

@@ -4,8 +4,10 @@ import re
 import sqlite3
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+
+from projection_api.auth import require_projection_read
 
 app = FastAPI(
     title="Projection API",
@@ -56,6 +58,14 @@ async def _proxy_gateway(path: str, params: dict | None = None):
 
 async def _proxy_evolution(path: str, params: dict | None = None):
     return await _proxy_get(STRATEGY_EVOLUTION_URL, path, params)
+
+
+@app.get("/v1/bots/overview")
+def get_bots_overview(_auth: None = Depends(require_projection_read)):
+    """三个 Bot 的六维只读状态。不触发资金动作。要求服务身份。"""
+    from projection_api.overview import build_overview
+
+    return build_overview()
 
 
 @app.get("/v1/markets/{market}/health")

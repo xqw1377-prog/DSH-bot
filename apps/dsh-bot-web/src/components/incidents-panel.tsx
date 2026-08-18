@@ -3,8 +3,13 @@
 import { useEffect, useState } from "react";
 import type { IncidentEvent } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
+import { writeActionProps } from "@/lib/console-view";
 
-export function IncidentsPanel() {
+export function IncidentsPanel({
+  canEmergencyStop,
+}: {
+  canEmergencyStop: boolean;
+}) {
   const [items, setItems] = useState<IncidentEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -42,6 +47,7 @@ export function IncidentsPanel() {
   }
 
   async function emergencyStop(market: "CRYPTO" | "A_SHARE") {
+    if (!canEmergencyStop) return;
     setStopping(true);
     setError(null);
     try {
@@ -70,18 +76,31 @@ export function IncidentsPanel() {
   return (
     <section>
       {error && <p style={{ color: "red" }}>{error}</p>}
+      {!canEmergencyStop && (
+        <p data-testid="risk-operator-required" style={{ color: "#6b7280" }}>
+          需要 RiskOperator 才能紧急停止。当前 Viewer 只能查看。
+        </p>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <button
-          disabled={stopping}
-          onClick={() => void emergencyStop("CRYPTO")}
-          style={buttonStyle("#dc2626")}
+          type="button"
+          data-testid="stop-crypto"
+          {...writeActionProps(canEmergencyStop, () => {
+            void emergencyStop("CRYPTO");
+          })}
+          disabled={!canEmergencyStop || stopping}
+          style={buttonStyle("#dc2626", !canEmergencyStop)}
         >
           Crypto 紧急停止
         </button>
         <button
-          disabled={stopping}
-          onClick={() => void emergencyStop("A_SHARE")}
-          style={buttonStyle("#b45309")}
+          type="button"
+          data-testid="stop-ashare"
+          {...writeActionProps(canEmergencyStop, () => {
+            void emergencyStop("A_SHARE");
+          })}
+          disabled={!canEmergencyStop || stopping}
+          style={buttonStyle("#b45309", !canEmergencyStop)}
         >
           A 股紧急停止
         </button>
@@ -127,13 +146,13 @@ const th = {
 };
 const td = { border: "1px solid #e5e7eb", padding: "6px 10px", fontSize: 14 };
 
-function buttonStyle(color: string) {
+function buttonStyle(color: string, disabled = false) {
   return {
     padding: "6px 16px",
     borderRadius: 6,
     border: "none",
-    backgroundColor: color,
+    backgroundColor: disabled ? "#9ca3af" : color,
     color: "#ffffff",
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
   };
 }

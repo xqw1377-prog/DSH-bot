@@ -45,6 +45,8 @@ export RISK_AUDITOR_DB="${RISK_AUDITOR_DB:-$ROOT/.data/risk-auditor.db}"
 export DSH_RUNTIME_DB="${DSH_RUNTIME_DB:-$ROOT/.data/runtime.db}"
 # Projection / Bot 服务端持有，浏览器不持有
 export QUANT_GATEWAY_API_KEY="${QUANT_GATEWAY_API_KEY:-}"
+# 生产 /v1/bots/overview 需要服务身份，否则 503
+export PROJECTION_API_KEY="${PROJECTION_API_KEY:-}"
 mkdir -p "$ROOT/.data"
 
 pids=()

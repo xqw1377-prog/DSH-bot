@@ -4,4 +4,7 @@ export {
   type BotTask,
   type IncidentEvent,
   type ChiefAnswer,
+  type BotOverview,
+  type BotsOverview,
+  type GlobalMode,
 } from "./projection-client.js";
