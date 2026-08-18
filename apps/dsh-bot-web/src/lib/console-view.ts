@@ -25,7 +25,31 @@ export function botById(
 }
 
 export function dataLooksHealthy(data: BotOverview["data"]): boolean {
-  return data === "FRESH";
+  return data === "FRESH" || data === "MARKET_CLOSED";
+}
+
+export function writeActionProps(
+  enabled: boolean,
+  onAct: () => void,
+): { disabled: true } | { disabled: false; onClick: () => void } {
+  if (!enabled) {
+    return { disabled: true };
+  }
+  return { disabled: false, onClick: onAct };
+}
+
+export async function afterViewer<T>(
+  viewer: () => Promise<{ principal: Principal } | { error: { status: number } }>,
+  load: () => Promise<T>,
+): Promise<
+  | { principal: Principal; data: T }
+  | { error: { status: number } }
+> {
+  const auth = await viewer();
+  if ("error" in auth) {
+    return { error: auth.error };
+  }
+  return { principal: auth.principal, data: await load() };
 }
 
 export function homepageAlerts(overview: BotsOverview): string[] {

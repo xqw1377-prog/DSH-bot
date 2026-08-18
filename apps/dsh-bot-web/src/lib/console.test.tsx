@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { BotConsole } from "@/components/bot-console";
@@ -5,9 +7,11 @@ import { IncidentsPanel } from "@/components/incidents-panel";
 import { ModeBanner } from "@/components/mode-banner";
 import type { BotsOverview } from "@dsh-bot/client-sdk";
 import {
+  afterViewer,
   capabilitiesFrom,
   dataLooksHealthy,
   hasLiveSelector,
+  writeActionProps,
 } from "@/lib/console-view";
 import type { Principal } from "@/lib/identity";
 
@@ -136,6 +140,7 @@ describe("只读三 Bot 控制台", () => {
     expect(dataLooksHealthy("STALE")).toBe(false);
     expect(dataLooksHealthy("DISCONNECTED")).toBe(false);
     expect(dataLooksHealthy("FRESH")).toBe(true);
+    expect(dataLooksHealthy("MARKET_CLOSED")).toBe(true);
     const html = renderToStaticMarkup(<BotConsole overview={overview()} />);
     expect(html).toContain('data-testid="dim-crypto-data"');
     expect(html).toContain(">STALE<");
@@ -155,11 +160,20 @@ describe("只读三 Bot 控制台", () => {
       <IncidentsPanel canEmergencyStop={caps.canEmergencyStop} />,
     );
     expect(html).toContain("risk-operator-required");
-    expect(html).toMatch(/disabled="" data-testid="stop-crypto"/);
-    expect(html).toMatch(/disabled="" data-testid="stop-ashare"/);
+    expect(html).toContain('data-testid="stop-crypto"');
+    expect(html).toContain('data-testid="stop-ashare"');
+    expect(html).toMatch(/data-testid="stop-crypto"[^>]*disabled=""/);
+    expect(html).toMatch(/data-testid="stop-ashare"[^>]*disabled=""/);
+    expect(html).not.toMatch(/data-testid="stop-crypto"[^>]*onClick/);
+    expect(html).not.toMatch(/data-testid="stop-ashare"[^>]*onClick/);
+    const inert = writeActionProps(false, () => {
+      throw new Error("viewer must not act");
+    });
+    expect("onClick" in inert).toBe(false);
+    expect(inert.disabled).toBe(true);
   });
 
-  it("展示 GLOBAL MODE，LIVE 只作为异常且不是选择器", () => {
+  it("展示 GLOBAL MODE，意外 LIVE 为 SECURITY VIOLATION 且不是选择器", () => {
     const mixed = renderToStaticMarkup(
       <ModeBanner globalMode="MIXED" liveAnomaly={false} />,
     );
@@ -167,11 +181,45 @@ describe("只读三 Bot 控制台", () => {
     expect(hasLiveSelector(mixed)).toBe(false);
 
     const live = renderToStaticMarkup(
-      <ModeBanner globalMode="PAPER" liveAnomaly />,
+      <ModeBanner globalMode="SECURITY_VIOLATION" liveAnomaly />,
     );
-    expect(live).toContain("LIVE 异常");
+    expect(live).toContain("GLOBAL MODE: SECURITY VIOLATION");
+    expect(live).not.toContain("GLOBAL MODE: LIVE");
     expect(hasLiveSelector(live)).toBe(false);
     expect(live).not.toContain("<select");
     expect(live).not.toContain("<option");
+  });
+
+  it("无 Viewer 时 Projection 调用次数为 0", async () => {
+    const load = vi.fn(async () => ({ ok: true }));
+    const result = await afterViewer(
+      async () => ({ error: { status: 401 } }),
+      load,
+    );
+    expect(load).not.toHaveBeenCalled();
+    expect(result).toEqual({ error: { status: 401 } });
+  });
+
+  it("认证 RSC 使用动态 / no-store，且先鉴权再读 Projection", () => {
+    const layout = readFileSync(
+      join(__dirname, "../app/(console)/layout.tsx"),
+      "utf8",
+    );
+    const home = readFileSync(join(__dirname, "../app/(console)/page.tsx"), "utf8");
+    const nextConfig = readFileSync(
+      join(__dirname, "../../next.config.js"),
+      "utf8",
+    );
+    expect(layout).toContain('export const dynamic = "force-dynamic"');
+    expect(layout).toContain("export const revalidate = 0");
+    expect(layout).toContain('export const fetchCache = "force-no-store"');
+    expect(home).toContain('export const fetchCache = "force-no-store"');
+    expect(layout.indexOf("requirePageViewer")).toBeLessThan(
+      layout.indexOf("getBotsOverview"),
+    );
+    expect(home.indexOf("requirePageViewer")).toBeLessThan(
+      home.indexOf("getBotsOverview"),
+    );
+    expect(nextConfig).not.toContain("PROJECTION_API_URL");
   });
 });

@@ -9,12 +9,24 @@ function upstream(path: string[], search: string): string {
   return `${base}/${suffix}${search}`;
 }
 
+function serviceIdentityHeaders(): HeadersInit {
+  const key = process.env.PROJECTION_API_KEY || "";
+  return key ? { "X-API-Key": key } : {};
+}
+
 async function proxy(request: Request, path: string[]): Promise<NextResponse> {
   const url = new URL(request.url);
   const target = upstream(path, url.search);
-  const init: RequestInit = { method: request.method, cache: "no-store" };
+  const init: RequestInit = {
+    method: request.method,
+    cache: "no-store",
+    headers: serviceIdentityHeaders(),
+  };
   if (request.method !== "GET" && request.method !== "HEAD") {
-    init.headers = { "Content-Type": "application/json" };
+    init.headers = {
+      ...serviceIdentityHeaders(),
+      "Content-Type": "application/json",
+    };
     init.body = await request.text();
   }
   const upstreamResp = await fetch(target, init);

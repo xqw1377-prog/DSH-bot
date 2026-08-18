@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { Approval } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
+import { writeActionProps } from "@/lib/console-view";
 
 const SUBJECT_TYPE_LABELS: Record<Approval["subject_type"], string> = {
   order: "下单",
@@ -111,18 +112,22 @@ export function ApprovalsPanel({ canDecide }: { canDecide: boolean }) {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   type="button"
-                  disabled={!canDecide || decidingId !== null}
                   data-testid="approve-button"
-                  onClick={() => void decide(a.approval_id, "APPROVED")}
+                  {...writeActionProps(canDecide, () => {
+                    void decide(a.approval_id, "APPROVED");
+                  })}
+                  disabled={!canDecide || decidingId !== null}
                   style={buttonStyle("#16a34a", !canDecide)}
                 >
                   批准
                 </button>
                 <button
                   type="button"
-                  disabled={!canDecide || decidingId !== null}
                   data-testid="reject-button"
-                  onClick={() => void decide(a.approval_id, "REJECTED")}
+                  {...writeActionProps(canDecide, () => {
+                    void decide(a.approval_id, "REJECTED");
+                  })}
+                  disabled={!canDecide || decidingId !== null}
                   style={buttonStyle("#dc2626", !canDecide)}
                 >
                   拒绝

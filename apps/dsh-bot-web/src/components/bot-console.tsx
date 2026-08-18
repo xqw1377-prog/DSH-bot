@@ -86,7 +86,12 @@ export function BotCard({ bot }: { bot: BotOverview }) {
 }
 
 function DimensionGrid({ bot }: { bot: BotOverview }) {
-  const dataColor = bot.data === "FRESH" ? "#15803d" : "#b91c1c";
+  const dataColor =
+    bot.data === "FRESH"
+      ? "#15803d"
+      : bot.data === "MARKET_CLOSED"
+        ? "#6b7280"
+        : "#b91c1c";
   const rows: Array<[string, string, string | undefined]> = [
     ["Runtime", bot.runtime, undefined],
     ["Mode", bot.read_only ? "READ ONLY" : bot.mode, bot.mode === "LIVE" ? "#b91c1c" : undefined],

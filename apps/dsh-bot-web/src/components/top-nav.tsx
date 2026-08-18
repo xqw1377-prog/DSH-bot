@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ModeBanner } from "@/components/mode-banner";
+import type { GlobalMode } from "@dsh-bot/client-sdk";
 
 const NAV_ITEMS = [
   { href: "/", label: "Bot Home" },
@@ -18,7 +19,7 @@ export function TopNav({
   globalMode,
   liveAnomaly,
 }: {
-  globalMode: "PAPER" | "SHADOW" | "MIXED";
+  globalMode: GlobalMode;
   liveAnomaly: boolean;
 }) {
   return (

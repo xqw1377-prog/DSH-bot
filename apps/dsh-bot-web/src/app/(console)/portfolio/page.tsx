@@ -5,6 +5,8 @@ import { projection } from "@/lib/projection";
 
 // 行情与持仓必须实时获取，不能静态预渲染出陈旧数据。
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
 
 const MARKETS: { value: Market; label: string }[] = [
   { value: "A_SHARE", label: "A 股" },

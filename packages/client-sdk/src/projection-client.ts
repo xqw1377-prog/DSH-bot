@@ -10,12 +10,30 @@ import type {
   StrategyCandidate,
 } from "./types.js";
 
+export type ProjectionClientOptions = {
+  headers?: Record<string, string> | (() => Record<string, string>);
+};
+
 /** 面向前端的只读投影客户端。资金动作不经过此客户端，必须走审批流程。 */
 export class ProjectionClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly options: ProjectionClientOptions = {},
+  ) {}
+
+  private requestHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    const provided =
+      typeof this.options.headers === "function"
+        ? this.options.headers()
+        : this.options.headers ?? {};
+    return { ...provided, ...extra };
+  }
 
   private async get<T>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`);
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      cache: "no-store",
+      headers: this.requestHeaders(),
+    });
     if (!res.ok) {
       throw new Error(`projection-api ${path} failed: ${res.status}`);
     }
@@ -25,7 +43,8 @@ export class ProjectionClient {
   private async post<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      headers: this.requestHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -95,8 +114,21 @@ export class ProjectionClient {
 }
 
 export type BotRuntime = "ONLINE" | "DEGRADED" | "OFFLINE";
-export type BotMode = "PAPER" | "SHADOW" | "LIVE" | "MIXED";
-export type BotData = "FRESH" | "STALE" | "DISCONNECTED";
+export type BotMode = "PAPER" | "SHADOW" | "LIVE" | "MIXED" | "UNKNOWN";
+export type BotData = "FRESH" | "MARKET_CLOSED" | "STALE" | "DISCONNECTED";
+export type GlobalMode =
+  | "PAPER"
+  | "SHADOW"
+  | "MIXED"
+  | "UNKNOWN"
+  | "SECURITY_VIOLATION";
+export type BotSeverity =
+  | "HALTED"
+  | "INCIDENT"
+  | "UNKNOWN"
+  | "DEGRADED"
+  | "WARNING"
+  | "NORMAL";
 export type BotTaskDim =
   | "IDLE"
   | "ANALYZING"
@@ -118,6 +150,7 @@ export type BotOverview = {
   task: BotTaskDim;
   order: BotOrderDim;
   risk: BotRisk;
+  severity?: BotSeverity;
   clock_skew_ms: number | null;
   degraded: boolean;
   detail?: string | null;
@@ -132,7 +165,7 @@ export type BotOverview = {
 
 export type BotsOverview = {
   as_of: string;
-  global_mode: "PAPER" | "SHADOW" | "MIXED";
+  global_mode: GlobalMode;
   live_anomaly: boolean;
   alerts: string[];
   bots: BotOverview[];

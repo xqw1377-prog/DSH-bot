@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { IncidentEvent } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
+import { writeActionProps } from "@/lib/console-view";
 
 export function IncidentsPanel({
   canEmergencyStop,
@@ -83,18 +84,22 @@ export function IncidentsPanel({
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <button
           type="button"
-          disabled={!canEmergencyStop || stopping}
           data-testid="stop-crypto"
-          onClick={() => void emergencyStop("CRYPTO")}
+          {...writeActionProps(canEmergencyStop, () => {
+            void emergencyStop("CRYPTO");
+          })}
+          disabled={!canEmergencyStop || stopping}
           style={buttonStyle("#dc2626", !canEmergencyStop)}
         >
           Crypto 紧急停止
         </button>
         <button
           type="button"
-          disabled={!canEmergencyStop || stopping}
           data-testid="stop-ashare"
-          onClick={() => void emergencyStop("A_SHARE")}
+          {...writeActionProps(canEmergencyStop, () => {
+            void emergencyStop("A_SHARE");
+          })}
+          disabled={!canEmergencyStop || stopping}
           style={buttonStyle("#b45309", !canEmergencyStop)}
         >
           A 股紧急停止

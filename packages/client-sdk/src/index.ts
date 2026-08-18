@@ -6,4 +6,5 @@ export {
   type ChiefAnswer,
   type BotOverview,
   type BotsOverview,
+  type GlobalMode,
 } from "./projection-client.js";

@@ -103,6 +103,7 @@ function applyEnv(extra: Record<string, string | undefined> = {}): void {
     if (
       key.startsWith("DSH_") ||
       key === "PROJECTION_API_URL" ||
+      key === "PROJECTION_API_KEY" ||
       key === "QUANT_GATEWAY_URL"
     ) {
       delete process.env[key];
