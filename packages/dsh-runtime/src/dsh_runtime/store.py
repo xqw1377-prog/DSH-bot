@@ -8,9 +8,12 @@ DSH Session 不能成为唯一交易账本（设计红线），但 Agent 的事�
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import UTC, datetime
 from uuid import uuid4
+
+from .outbox import enqueue, ensure_schema, outbox_ready, publish_outbox
 
 
 def _connect() -> sqlite3.Connection:
@@ -64,10 +67,12 @@ def _connect() -> sqlite3.Connection:
             " NOT NULL DEFAULT 'PENDING'"
         )
     conn.commit()
+    ensure_schema(conn)
     return conn
 
 
 _conn: sqlite3.Connection | None = None
+_tx_depth = 0
 
 
 def _get() -> sqlite3.Connection:
@@ -79,10 +84,42 @@ def _get() -> sqlite3.Connection:
 
 def reset() -> None:
     """测试辅助：丢弃连接，恢复干净状态。"""
-    global _conn
+    global _conn, _tx_depth
     if _conn is not None:
         _conn.close()
         _conn = None
+    _tx_depth = 0
+
+
+def _commit_if_idle(conn: sqlite3.Connection) -> None:
+    if _tx_depth == 0:
+        conn.commit()
+
+
+@contextmanager
+def transaction(*, publish: bool = True):
+    """嵌套安全事务：最外层 commit 后再 publish outbox。"""
+    global _tx_depth
+    conn = _get()
+    outermost = _tx_depth == 0
+    _tx_depth += 1
+    try:
+        yield conn
+    except Exception:
+        if outermost:
+            conn.rollback()
+        raise
+    else:
+        if outermost:
+            conn.commit()
+            if publish:
+                publish_outbox(conn)
+    finally:
+        _tx_depth -= 1
+
+
+def publish_pending() -> int:
+    return publish_outbox(_get())
 
 
 class Memory:
@@ -94,13 +131,14 @@ class Memory:
     def remember(self, content: str, kind: str = "note",
                  tags: list[str] | None = None) -> str:
         note_id = f"memo-{uuid4().hex[:12]}"
-        _get().execute(
+        conn = _get()
+        conn.execute(
             "INSERT INTO agent_memory VALUES (?, ?, ?, ?, ?, ?)",
             (note_id, self.bot, kind, content,
              json.dumps(tags or [], ensure_ascii=False),
              datetime.now(UTC).isoformat()),
         )
-        _get().commit()
+        _commit_if_idle(conn)
         return note_id
 
     def recent(self, limit: int = 20, kind: str | None = None) -> list[dict]:
@@ -162,24 +200,37 @@ class EventLog:
         cls._validator_cache[event_type] = validator
         return validator
 
+    def validate(self, event_type: str, payload: dict) -> None:
+        validator = self._validator_for(event_type)
+        errors = sorted(validator.iter_errors(payload), key=str)
+        if errors:
+            raise ValueError(
+                f"event {event_type} payload violates schema: "
+                f"{errors[0].message}"
+            )
+
     def emit(self, event_type: str, market: str, actor_kind: str, actor_id: str,
              payload: dict) -> str:
-        validator = self._validator_for(event_type)
-        if validator is not None:
-            errors = sorted(validator.iter_errors(payload), key=str)
-            if errors:
-                raise ValueError(
-                    f"event {event_type} payload violates schema: "
-                    f"{errors[0].message}"
-                )
-        event_id = str(uuid4())
-        _get().execute(
-            "INSERT INTO domain_events VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (event_id, event_type, datetime.now(UTC).isoformat(),
-             market, actor_kind, actor_id, json.dumps(payload, ensure_ascii=False)),
+        """只写入 event_outbox；禁止直写 domain_events。"""
+        self.validate(event_type, payload)
+        conn = _get()
+        if not outbox_ready(conn):
+            raise RuntimeError("outbox unavailable; refuse direct domain_events write")
+        event_id = enqueue(
+            conn,
+            event_type=event_type,
+            market=market,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            payload=payload,
         )
-        _get().commit()
+        if _tx_depth == 0:
+            conn.commit()
+            publish_outbox(conn)
         return event_id
+
+    def publish_pending(self) -> int:
+        return publish_pending()
 
     def query(self, event_type: str | None = None, limit: int = 50) -> list[dict]:
         sql = "SELECT event_id, event_type, occurred_at, market, actor_kind, actor_id, payload FROM domain_events"

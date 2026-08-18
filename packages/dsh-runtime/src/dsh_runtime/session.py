@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from dsh_runtime.profile import Profile
-from dsh_runtime.store import EventLog, Memory
+from dsh_runtime.store import EventLog, Memory, publish_pending
 from dsh_runtime.tasks import TaskStore
 
 
@@ -67,6 +67,7 @@ def run_once(session: BotSession, agent: Agent) -> None:
             "bot/tick.finished", session.profile.market, "system", agent.name,
             {"bot": agent.name},
         )
+        publish_pending()
 
 
 def run_forever(session: BotSession, agent: Agent, interval_seconds: float) -> None:
