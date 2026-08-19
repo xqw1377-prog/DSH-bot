@@ -77,28 +77,51 @@ class SnapshotAdapter(MarketAdapter):
             )
         return json.loads(self._path.read_text(encoding="utf-8"))
 
+    def _parse_time(self, value) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
     def get_health(self) -> HealthStatus:
-        raw = self._load().get("health") or {}
+        snap = self._load()
+        raw = snap.get("health") or {}
         ticker_url = os.environ.get("QUANT_GATEWAY_PUBLIC_TICKER_URL", "").strip()
-        data_fresh = bool(raw.get("data_fresh", True))
-        detail = raw.get("detail") or f"snapshot {self._path.name}"
+        data_fresh = bool(raw.get("data_fresh", snap.get("data_fresh", True)))
+        detail = (
+            raw.get("detail")
+            or snap.get("detail")
+            or f"snapshot {self._path.name}"
+        )
         if ticker_url:
-            symbols = [p.get("symbol") for p in (self._load().get("positions") or []) if p.get("symbol")]
+            symbols = [p.get("symbol") for p in (snap.get("positions") or []) if p.get("symbol")]
             prices = [fetch_public_price(str(s)) for s in symbols[:3]]
             if symbols and not any(prices):
                 data_fresh = False
                 detail = f"{detail}; public ticker unreachable"
             elif any(prices):
                 detail = f"{detail}; public ticker overlaid"
+        as_of = (
+            self._parse_time(snap.get("exported_at"))
+            or self._parse_time(raw.get("as_of"))
+            or _now()
+        )
+        observed = self._parse_time(snap.get("source_observed_at"))
         return HealthStatus(
             market=self.market,
             system_ok=bool(raw.get("system_ok", True)),
             data_fresh=data_fresh,
             trading_channel_ok=bool(raw.get("trading_channel_ok", False)),
             clock_skew_ms=int(raw.get("clock_skew_ms", 0)),
-            degraded=bool(raw.get("degraded", False)) or not data_fresh,
+            degraded=bool(raw.get("degraded", snap.get("degraded", False))) or not data_fresh,
             detail=detail,
-            as_of=_now(),
+            as_of=as_of,
+            source_system=snap.get("source_system") or raw.get("source_system"),
+            source_mode=snap.get("source_mode") or raw.get("source_mode"),
+            source_observed_at=observed,
+            snapshot_id=snap.get("snapshot_id"),
         )
 
     def get_positions(self, account_id: str | None = None) -> list[Position]:
@@ -158,6 +181,8 @@ class SnapshotAdapter(MarketAdapter):
     def get_signals(self) -> list[Signal]:
         rows = []
         for item in self._load().get("signals") or []:
+            if str(item.get("kind") or "").upper() == "SCREEN_RESULT":
+                continue
             generated = item.get("generated_at") or _now().isoformat()
             valid = item.get("valid_until") or _now().isoformat()
             rows.append(

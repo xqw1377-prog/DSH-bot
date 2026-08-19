@@ -176,6 +176,9 @@ def _health(fresh: bool, **extra):
         "degraded": extra.get("degraded", False),
         "detail": extra.get("detail", "ok"),
         "as_of": "2026-08-18T00:00:00+00:00",
+        "source_system": extra.get("source_system"),
+        "source_mode": extra.get("source_mode"),
+        "source_observed_at": extra.get("source_observed_at"),
     }
     return body
 
@@ -310,6 +313,33 @@ def test_bots_overview_missing_mode_is_unknown_not_paper(monkeypatch):
     crypto = next(b for b in body["bots"] if b["bot_id"] == "crypto")
     assert crypto["mode"] == "UNKNOWN"
     assert crypto["mode"] != "PAPER"
+
+
+def test_bots_overview_readonly_channel_is_not_halted(monkeypatch):
+    monkeypatch.setenv("DSH_CRYPTO_MODE", "shadow")
+    monkeypatch.setenv("DSH_A_SHARE_MODE", "shadow")
+    monkeypatch.setattr(projection_main, "get_bot_tasks", lambda: [])
+    monkeypatch.setattr(projection_main, "get_incidents", lambda limit=50: [])
+
+    def fetch(path: str):
+        if "health" in path:
+            return _health(
+                True,
+                trading_channel_ok=False,
+                detail="source=6celue_v5; mode=demo",
+                source_system="6celue_v5",
+                source_mode="demo",
+            )
+        return []
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch, now=_SESSION_OPEN)
+    crypto = next(b for b in body["bots"] if b["bot_id"] == "crypto")
+    assert crypto["risk"] != "HALTED"
+    assert crypto["runtime"] == "ONLINE"
+    assert crypto["mode"] == "SHADOW"
+    assert crypto["source_system"] == "6celue_v5"
 
 
 def test_bots_overview_a_share_closed_is_market_closed_not_stale(monkeypatch):

@@ -70,6 +70,15 @@ export function BotCard({ bot }: { bot: BotOverview }) {
       <p style={{ margin: "12px 0 0", fontSize: 12, color: "#6b7280" }}>
         连接 {bot.connection} · 时钟 {bot.clock_skew_ms ?? "—"}ms · as_of {bot.as_of}
       </p>
+      {(bot.source_system || bot.source_mode || bot.source_observed_at) && (
+        <p
+          data-testid={`bot-source-${bot.bot_id}`}
+          style={{ margin: "4px 0 0", fontSize: 12, color: "#6b7280" }}
+        >
+          来源 {bot.source_system || "—"} · 源模式 {bot.source_mode || "—"} ·
+          观察 {bot.source_observed_at || "—"}
+        </p>
+      )}
       {bot.detail && (
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "#6b7280" }}>
           降级原因：{bot.detail}

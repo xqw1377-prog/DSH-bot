@@ -32,7 +32,7 @@ class Profile:
 
 
 def load_profile(path: str | Path) -> Profile:
-    raw = yaml.safe_load(Path(path).read_text())
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     required = {"name", "market", "primary_tools", "prohibited"}
     missing = required - set(raw or {})
     if missing:

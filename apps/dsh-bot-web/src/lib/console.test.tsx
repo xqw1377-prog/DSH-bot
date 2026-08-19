@@ -73,6 +73,9 @@ const overview = (over: Partial<BotsOverview> = {}): BotsOverview => ({
       clock_skew_ms: 12,
       degraded: true,
       detail: "feed lag",
+      source_system: "6celue_v5",
+      source_mode: "demo",
+      source_observed_at: "t1",
       connection: "CONNECTED",
       counts: {
         pending_approvals: 2,
@@ -130,6 +133,8 @@ describe("只读三 Bot 控制台", () => {
     expect(html).toContain("bot-card-a-share");
     expect(html).toContain("READ ONLY");
     expect(html).toContain("as_of t1");
+    expect(html).toContain("来源 6celue_v5");
+    expect(html).toContain("源模式 demo");
     expect(html).toContain("Runtime");
     expect(html).toContain("STALE");
     expect(html).toContain("HALTED");
@@ -171,6 +176,15 @@ describe("只读三 Bot 控制台", () => {
     });
     expect("onClick" in inert).toBe(false);
     expect(inert.disabled).toBe(true);
+  });
+
+  it("Shadow 全局模式只展示 SHADOW，没有 LIVE 选择器", () => {
+    const html = renderToStaticMarkup(
+      <ModeBanner globalMode="SHADOW" liveAnomaly={false} />,
+    );
+    expect(html).toContain("GLOBAL MODE: SHADOW");
+    expect(html).not.toContain("GLOBAL MODE: LIVE");
+    expect(hasLiveSelector(html)).toBe(false);
   });
 
   it("展示 GLOBAL MODE，意外 LIVE 为 SECURITY VIOLATION 且不是选择器", () => {

@@ -27,6 +27,10 @@ class HealthStatus(_Contract):
     degraded: bool = False
     detail: str | None = None
     as_of: datetime
+    source_system: str | None = None
+    source_mode: str | None = None
+    source_observed_at: datetime | None = None
+    snapshot_id: str | None = None
 
 
 class Position(_Contract):

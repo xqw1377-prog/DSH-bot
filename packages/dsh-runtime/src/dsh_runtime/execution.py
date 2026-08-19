@@ -6,11 +6,27 @@ Crypto / A 股等专业 Bot 只提供市场、账户和运行模式；
 Shadow 是运行模式：预览后记 SHADOW_RECORDED，禁止 request_order。
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from dsh_contracts import Market, OrderIntent, OrderSide
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def a_share_session_open(now: datetime | None = None) -> bool:
+    """A 股交易时段。闭市不得当数据事故。"""
+    current = now or datetime.now(_SHANGHAI)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC).astimezone(_SHANGHAI)
+    else:
+        current = current.astimezone(_SHANGHAI)
+    if current.weekday() >= 5:
+        return False
+    clock = current.time()
+    return (time(9, 30) <= clock < time(11, 30)) or (time(13, 0) <= clock < time(15, 0))
 from dsh_runtime.reconcile import evaluate_reconcile
 from dsh_runtime.session import BotSession
 
@@ -713,6 +729,13 @@ class TradeExecutionCore:
     def _process_new_signals(self, session: BotSession) -> None:
         session.use("query_health")
         health = self.gateway.get_health(self.market)
+        if self.market == Market.A_SHARE and not a_share_session_open():
+            session.memory.remember(
+                "A股闭市，跳过信号处理，不记数据事故",
+                kind="market-closed",
+                tags=["market-closed"],
+            )
+            return
         if not health.get("system_ok") or not health.get("data_fresh"):
             session.events.emit(
                 "incident/opened", self.market.value, "bot", self.name,

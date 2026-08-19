@@ -196,7 +196,7 @@ class EventLog:
             raise ValueError(
                 "jsonschema is required to emit domain events"
             ) from exc
-        validator = Draft202012Validator(json.loads(schema_file.read_text()))
+        validator = Draft202012Validator(json.loads(schema_file.read_text(encoding="utf-8")))
         cls._validator_cache[event_type] = validator
         return validator
 

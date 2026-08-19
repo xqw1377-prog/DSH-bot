@@ -45,6 +45,7 @@ packages/
   domain-contracts/     # 领域对象 Pydantic 模型（订单意图、信号、审批等）
   event-schemas/        # 领域事件 JSON Schema（语言中立）
   client-sdk/           # 前端 TypeScript SDK
+  dsh-snapshot-bridge/  # 双量化只读快照导出（Shadow，不下单）
 infra/
   containers/           # Dockerfile 与 compose
   observability/        # 监控与告警配置
@@ -79,6 +80,9 @@ cp .env.local.example .env.local   # 统一 DSH_ENV / 账户 / DB / 服务地址
 ```
 
 生产启动请用 `./scripts/start-backends.sh`（要求 API Key，禁止 `DSH_ENV=development` 与 Paper）。
+
+双量化只读 Shadow（不改 6celue / ZISU 引擎，不下单）：见
+`docs/dual-quant-readonly-snapshot-bridge.md` 与 `.env.shadow.example`。
 
 ### 环境变量
 

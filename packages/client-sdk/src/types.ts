@@ -52,6 +52,10 @@ export interface HealthStatus {
   degraded: boolean;
   detail?: string | null;
   as_of: string;
+  source_system?: string | null;
+  source_mode?: string | null;
+  source_observed_at?: string | null;
+  snapshot_id?: string | null;
 }
 
 export interface Position {

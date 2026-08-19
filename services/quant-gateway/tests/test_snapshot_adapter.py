@@ -98,6 +98,53 @@ def test_public_ticker_overlays_price(tmp_path, monkeypatch):
     assert "overlaid" in health.detail
 
 
+def test_snapshot_metadata_and_skips_screen_results(tmp_path):
+    path = tmp_path / "A_SHARE.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dsh-snapshot-1",
+                "snapshot_id": "snap-1",
+                "market": "A_SHARE",
+                "account_id": "paper-a-share-001",
+                "source_system": "zisu",
+                "source_mode": "paper",
+                "source_observed_at": "2026-08-18T02:00:00+00:00",
+                "exported_at": "2026-08-18T02:00:05+00:00",
+                "data_fresh": True,
+                "degraded": False,
+                "detail": "source=zisu; session=CLOSED",
+                "health": {
+                    "system_ok": True,
+                    "data_fresh": True,
+                    "trading_channel_ok": False,
+                    "degraded": False,
+                    "detail": "source=zisu; session=CLOSED",
+                },
+                "positions": [],
+                "accounts": [],
+                "signals": [
+                    {
+                        "kind": "SCREEN_RESULT",
+                        "signal_id": "should-skip",
+                        "strategy_id": "leaf",
+                        "symbol": "600519",
+                        "side": "BUY",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = SnapshotAdapter(Market.A_SHARE, path)
+    health = adapter.get_health()
+    assert health.source_system == "zisu"
+    assert health.source_mode == "paper"
+    assert health.trading_channel_ok is False
+    assert health.as_of.isoformat().startswith("2026-08-18T02:00:05")
+    assert adapter.get_signals() == []
+
+
 def test_public_ticker_fail_closed_freshness(tmp_path, monkeypatch):
     path = _write_snapshot(tmp_path)
     monkeypatch.setenv(

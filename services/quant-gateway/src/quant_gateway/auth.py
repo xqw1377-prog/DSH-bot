@@ -73,6 +73,11 @@ def _authenticate(x_api_key: str | None) -> Principal:
 
 def require_scope(scope: str):
     def dependency(x_api_key: str | None = Header(default=None)) -> Principal:
+        if scope == "write" and os.environ.get("QUANT_GATEWAY_READ_ONLY") == "1":
+            raise HTTPException(
+                status_code=403,
+                detail="gateway is read-only; write endpoints fail closed",
+            )
         if not auth_enabled():
             return Principal(api_key="", name="anonymous", scopes=frozenset({"read", "write"}))
         principal = _authenticate(x_api_key)

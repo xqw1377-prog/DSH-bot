@@ -141,9 +141,7 @@ def default_gateway_fetch(path: str) -> dict | list | None:
 def _health_runtime(health: dict | None) -> str:
     if health is None:
         return "OFFLINE"
-    if health.get("degraded") or not health.get("system_ok") or not health.get(
-        "trading_channel_ok", True
-    ):
+    if health.get("degraded") or not health.get("system_ok"):
         return "DEGRADED"
     return "ONLINE"
 
@@ -280,10 +278,7 @@ def _build_bot(
     bot_tasks = _filter_tasks(tasks, spec["runtime_bot"])
     bot_incidents = _filter_incidents(incidents, market)
     halted = False
-    if health is not None and (
-        not health.get("trading_channel_ok", True)
-        or "emergency stop" in (health.get("detail") or "").lower()
-    ):
+    if health is not None and "emergency stop" in (health.get("detail") or "").lower():
         halted = True
     if _kill_switch_halted(bot_incidents, market):
         halted = True
@@ -295,6 +290,9 @@ def _build_bot(
     as_of = (health or {}).get("as_of") or _now()
     if hasattr(as_of, "isoformat"):
         as_of = as_of.isoformat()
+    observed = None if health is None else health.get("source_observed_at")
+    if hasattr(observed, "isoformat"):
+        observed = observed.isoformat()
 
     unknown_n = sum(
         1
@@ -319,6 +317,9 @@ def _build_bot(
         "clock_skew_ms": (health or {}).get("clock_skew_ms"),
         "degraded": bool((health or {}).get("degraded")) if health else True,
         "detail": None if health is None else health.get("detail"),
+        "source_system": None if health is None else health.get("source_system"),
+        "source_mode": None if health is None else health.get("source_mode"),
+        "source_observed_at": observed,
         "connection": "DISCONNECTED" if health is None else "CONNECTED",
         "counts": {
             "pending_approvals": 0
@@ -390,6 +391,13 @@ def _aggregate_chief(crypto: dict, ashare: dict, all_tasks: list[dict]) -> dict:
         "clock_skew_ms": max(skews) if skews else None,
         "degraded": runtime != "ONLINE" or data == "STALE" or risk != "NORMAL",
         "detail": "; ".join(details) or None,
+        "source_system": " / ".join(
+            s
+            for s in (crypto.get("source_system"), ashare.get("source_system"))
+            if s
+        ) or None,
+        "source_mode": global_mode(modes),
+        "source_observed_at": as_of or None,
         "connection": "DISCONNECTED" if runtime == "OFFLINE" else "CONNECTED",
         "counts": {
             "pending_approvals": crypto["counts"]["pending_approvals"]

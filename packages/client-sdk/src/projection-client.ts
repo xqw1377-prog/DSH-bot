@@ -154,6 +154,9 @@ export type BotOverview = {
   clock_skew_ms: number | null;
   degraded: boolean;
   detail?: string | null;
+  source_system?: string | null;
+  source_mode?: string | null;
+  source_observed_at?: string | null;
   connection: "CONNECTED" | "DISCONNECTED";
   counts: {
     pending_approvals: number;

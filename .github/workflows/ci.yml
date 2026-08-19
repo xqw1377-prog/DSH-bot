@@ -39,11 +39,20 @@ jobs:
         run: |
           cp .env.local.example .env.local
           chmod +x scripts/smoke_p0.sh scripts/start-local.sh scripts/start-backends.sh \
-            scripts/check_start_backends.sh
+            scripts/check_start_backends.sh scripts/smoke_shadow_snapshot.sh
       - name: Production start script refusals
         run: bash scripts/check_start_backends.sh
       - name: Process-level P0 smoke
         run: bash scripts/smoke_p0.sh
+      - name: Dual-quant readonly snapshot acceptance (pytest)
+        run: |
+          pytest packages/dsh-snapshot-bridge \
+            services/quant-gateway/tests/test_snapshot_adapter.py \
+            services/quant-gateway/tests/test_snapshot_readonly_gate.py \
+            services/projection-api/tests/test_projection.py \
+            packages/dsh-runtime/tests/test_market_closed.py -q --tb=short
+      - name: Dual-quant readonly snapshot acceptance (smoke)
+        run: bash scripts/smoke_shadow_snapshot.sh
 
   frontend:
     runs-on: ubuntu-latest
