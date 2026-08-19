@@ -105,7 +105,7 @@ cp .env.local.example .env.local   # 统一 DSH_ENV / 账户 / DB / 服务地址
 ### 测试与校验
 
 ```bash
-pytest services/ plugins/ packages/dsh-runtime -q
+pytest services/ plugins/ packages/ -q --tb=short -ra --import-mode=importlib
 python scripts/check_schemas.py
 bash scripts/smoke_p0.sh
 ```

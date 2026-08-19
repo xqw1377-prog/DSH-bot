@@ -34,7 +34,7 @@ jobs:
         run: |
           PKGS=$(find packages services plugins -name pyproject.toml \
             -exec dirname {} \; | sed 's/^/-e /' | tr '\n' ' ')
-          pip install $PKGS
+          pip install $PKGS pytest
       - name: Prepare local env
         run: |
           cp .env.local.example .env.local

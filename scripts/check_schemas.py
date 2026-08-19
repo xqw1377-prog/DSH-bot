@@ -22,11 +22,12 @@ EMIT_RE = re.compile(r'\.emit\(\s*"([a-z]+/[a-z_.]+)"', re.S)
 
 
 def main() -> int:
-    enum = set(json.loads((SCHEMAS / "envelope.json").read_text())
+    enum = set(json.loads((SCHEMAS / "envelope.json")
+                          .read_text(encoding="utf-8"))
                ["properties"]["event_type"]["enum"])
 
     schemas = {
-        str(p.relative_to(SCHEMAS)).removesuffix(".json")
+        p.relative_to(SCHEMAS).as_posix().removesuffix(".json")
         for p in SCHEMAS.rglob("*.json") if p.name != "envelope.json"
     }
 
@@ -35,7 +36,7 @@ def main() -> int:
         for py in d.rglob("*.py"):
             if "egg-info" in str(py) or ".venv" in str(py) or "/tests/" in str(py):
                 continue
-            emitted |= set(EMIT_RE.findall(py.read_text()))
+            emitted |= set(EMIT_RE.findall(py.read_text(encoding="utf-8")))
 
     failures = []
     warnings = []

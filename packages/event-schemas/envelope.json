@@ -50,6 +50,7 @@
         "bot/tick.failed",
         "bot/task.created",
         "bot/task.transitioned",
+        "market/chief.briefing",
         "market/chief.summary",
         "order/partially_filled",
         "order/rejected",

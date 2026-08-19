@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/market/chief.briefing.json",
+  "title": "MarketChiefBriefing",
+  "type": "object",
+  "required": ["as_of", "focus", "risks", "abandons", "counts"],
+  "properties": {
+    "as_of": {"type": "string"},
+    "focus": {"type": "array"},
+    "risks": {"type": "array"},
+    "abandons": {"type": "array"},
+    "ranked": {"type": "array"},
+    "counts": {"type": "object"}
+  },
+  "additionalProperties": true
+}
