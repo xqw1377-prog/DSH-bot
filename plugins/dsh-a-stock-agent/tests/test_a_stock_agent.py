@@ -20,6 +20,10 @@ from quant_gateway.routers import orders as orders_router
 
 PROFILES = Path(__file__).resolve().parent.parent.parent.parent / "profiles"
 client = TestClient(app)
+# 固定开市时刻，禁止与真实墙钟混用。
+# 2026-08-18 周二：UTC 02:00 = 上海 10:00 开市；UTC 04:00 = 上海 12:00 午休。
+TEST_NOW = datetime(2026, 8, 18, 2, 0, tzinfo=UTC)
+LUNCH_AT = datetime(2026, 8, 18, 4, 0, tzinfo=UTC)
 
 
 class AShareAdapter(MarketAdapter):
@@ -33,7 +37,8 @@ class AShareAdapter(MarketAdapter):
     def get_health(self):
         return HealthStatus(
             market=self.market, system_ok=True, data_fresh=True,
-            trading_channel_ok=True, clock_skew_ms=0, as_of=datetime.now(UTC),
+            trading_channel_ok=True, clock_skew_ms=0, as_of=TEST_NOW,
+            source_observed_at=TEST_NOW, market_session="OPEN",
         )
 
     def get_positions(self, account_id=None):
@@ -42,7 +47,7 @@ class AShareAdapter(MarketAdapter):
             market=self.market, account_id="paper-a-share-001",
             symbol="600519", quantity=self._qty, available_quantity=self._qty,
             frozen_quantity=Decimal("0"),
-            avg_cost=self._price, currency="CNY", as_of=datetime.now(UTC),
+            avg_cost=self._price, currency="CNY", as_of=TEST_NOW,
         )]
 
     def get_account_summary(self):
@@ -50,16 +55,16 @@ class AShareAdapter(MarketAdapter):
             market=self.market, account_id="paper-a-share-001",
             cash=self._cash, equity=self._cash + self._qty * self._price,
             available_cash=self._cash, frozen_cash=Decimal("0"),
-            currency="CNY", reconciliation_version="v1", as_of=datetime.now(UTC),
+            currency="CNY", reconciliation_version="v1", as_of=TEST_NOW,
         )]
 
     def get_signals(self):
-        now = datetime.now(UTC)
         return [Signal(
             signal_id="ashare-sig-1", market=self.market,
             strategy_id="mean-reversion-ashare", strategy_version="0.1.0",
             symbol="600519", side="BUY", strength=0.8,
-            generated_at=now, valid_until=now + timedelta(minutes=30),
+            generated_at=TEST_NOW,
+            valid_until=TEST_NOW + timedelta(minutes=30),
             data_snapshot_id="snap-a",
         )]
 
@@ -75,7 +80,7 @@ class AShareAdapter(MarketAdapter):
                 position_before=self._qty, position_after=self._qty + qty,
                 risk_budget_delta=notional,
                 worst_case_loss=notional * Decimal("0.01"),
-                limits_hit=[], as_of=datetime.now(UTC),
+                limits_hit=[], as_of=TEST_NOW,
             ),
         ).model_dump(mode="json")
 
@@ -139,6 +144,7 @@ def _agent_and_session():
     approvals._client = client
     agent = AShareAgent(
         gateway=gateway, approvals=approvals, account_id="paper-a-share-001",
+        now_fn=lambda: TEST_NOW,
     )
     return agent, BotSession.for_profile(
         load_profile(PROFILES / "a-stock-bot" / "profile.yaml")
@@ -165,3 +171,25 @@ def test_ashare_shadow_never_submits():
     run_once(session, agent)
     assert ADAPTER.submitted == []
     assert len(session.tasks.find_by_status("SHADOW_RECORDED")) == 1
+
+
+def test_ashare_lunch_closed_skips_work():
+    agent, session = _agent_and_session()
+    agent.now_fn = lambda: LUNCH_AT
+
+    def closed_health():
+        return HealthStatus(
+            market=Market.A_SHARE, system_ok=True, data_fresh=True,
+            trading_channel_ok=True, clock_skew_ms=0, as_of=LUNCH_AT,
+            source_observed_at=LUNCH_AT, market_session="CLOSED",
+        )
+
+    ADAPTER.get_health = closed_health
+    run_once(session, agent)
+    assert ADAPTER.submitted == []
+    assert session.tasks.find_by_status(
+        "AWAITING_APPROVAL", "SHADOW_RECORDED", "DONE", "SIGNAL_RECEIVED"
+    ) == []
+    assert session.events.query("incident/opened") == []
+    closed = session.memory.recent(kind="market-closed")
+    assert closed and "闭市" in closed[0]["content"]

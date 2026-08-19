@@ -122,6 +122,7 @@ class SnapshotAdapter(MarketAdapter):
             source_mode=snap.get("source_mode") or raw.get("source_mode"),
             source_observed_at=observed,
             snapshot_id=snap.get("snapshot_id"),
+            market_session=raw.get("market_session"),
         )
 
     def get_positions(self, account_id: str | None = None) -> list[Position]:

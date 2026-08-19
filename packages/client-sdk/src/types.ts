@@ -56,6 +56,7 @@ export interface HealthStatus {
   source_mode?: string | null;
   source_observed_at?: string | null;
   snapshot_id?: string | null;
+  market_session?: "OPEN" | "CLOSED" | "UNKNOWN" | null;
 }
 
 export interface Position {

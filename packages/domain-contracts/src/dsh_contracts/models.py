@@ -31,6 +31,7 @@ class HealthStatus(_Contract):
     source_mode: str | None = None
     source_observed_at: datetime | None = None
     snapshot_id: str | None = None
+    market_session: str | None = None
 
 
 class Position(_Contract):

@@ -6,29 +6,29 @@ Crypto / A 股等专业 Bot 只提供市场、账户和运行模式；
 Shadow 是运行模式：预览后记 SHADOW_RECORDED，禁止 request_order。
 """
 
+from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from dsh_contracts import Market, OrderIntent, OrderSide
+from dsh_runtime.reconcile import evaluate_reconcile
+from dsh_runtime.session import BotSession
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def a_share_session_open(now: datetime | None = None) -> bool:
-    """A 股交易时段。闭市不得当数据事故。"""
-    current = now or datetime.now(_SHANGHAI)
+    """A 股交易时段。闭市不得当数据事故。默认用调用方传入的 UTC 时刻。"""
+    current = now if now is not None else datetime.now(UTC)
     if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC).astimezone(_SHANGHAI)
-    else:
-        current = current.astimezone(_SHANGHAI)
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(_SHANGHAI)
     if current.weekday() >= 5:
         return False
     clock = current.time()
     return (time(9, 30) <= clock < time(11, 30)) or (time(13, 0) <= clock < time(15, 0))
-from dsh_runtime.reconcile import evaluate_reconcile
-from dsh_runtime.session import BotSession
 
 
 def _gateway_status(exc: Exception) -> int | None:
@@ -74,6 +74,7 @@ class TradeExecutionCore:
         min_strength: float = 0.6,
         mode: str = "paper",
         idempotency_prefix: str = "dsh-paper",
+        now_fn: Callable[[], datetime] | None = None,
     ):
         if mode == "live":
             raise ValueError(
@@ -90,6 +91,7 @@ class TradeExecutionCore:
         self.min_strength = min_strength
         self.mode = mode
         self.idempotency_prefix = idempotency_prefix
+        self.now_fn = now_fn or (lambda: datetime.now(UTC))
 
     def _transition_event(
         self,
@@ -265,7 +267,9 @@ class TradeExecutionCore:
         valid_until = signal.get("valid_until")
         if valid_until:
             until = datetime.fromisoformat(valid_until)
-            if datetime.now(UTC) > until:
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=UTC)
+            if self.now_fn() > until:
                 return f"signal expired at {valid_until}"
         try:
             session.use("query_signals")
@@ -729,7 +733,7 @@ class TradeExecutionCore:
     def _process_new_signals(self, session: BotSession) -> None:
         session.use("query_health")
         health = self.gateway.get_health(self.market)
-        if self.market == Market.A_SHARE and not a_share_session_open():
+        if self._ashare_session_closed(health):
             session.memory.remember(
                 "A股闭市，跳过信号处理，不记数据事故",
                 kind="market-closed",
@@ -750,6 +754,16 @@ class TradeExecutionCore:
         session.use("query_signals")
         for signal in self.gateway.get_signals(self.market):
             self._process_signal(session, signal)
+
+    def _ashare_session_closed(self, health: dict) -> bool:
+        if self.market != Market.A_SHARE:
+            return False
+        declared = str(health.get("market_session") or "").upper()
+        if declared == "CLOSED":
+            return True
+        if declared == "OPEN":
+            return False
+        return not a_share_session_open(self.now_fn())
 
     def _process_signal(self, session: BotSession, signal: dict) -> None:
         signal_id = signal["signal_id"]

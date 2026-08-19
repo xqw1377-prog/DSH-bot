@@ -1,5 +1,8 @@
 """A 股 Bot：与 Crypto 共用 TradeExecutionCore，Paper 先、LLM 不进。"""
 
+from collections.abc import Callable
+from datetime import datetime
+
 from dsh_contracts import Market
 from dsh_runtime.execution import TradeExecutionCore
 
@@ -14,6 +17,7 @@ class AShareAgent(TradeExecutionCore):
         account_id: str,
         min_strength: float = 0.6,
         mode: str = "paper",
+        now_fn: Callable[[], datetime] | None = None,
     ):
         super().__init__(
             name="a-stock-bot",
@@ -24,4 +28,5 @@ class AShareAgent(TradeExecutionCore):
             min_strength=min_strength,
             mode=mode,
             idempotency_prefix="ashare-paper",
+            now_fn=now_fn,
         )
