@@ -1,0 +1,22 @@
+# Spike keyless 回合补丁模板：__REPO_ROOT__ / __RUNTIME_DIR__ 由 verify.sh 渲染
+- id: llm-deepseek
+  disabled: true
+- id: session-title-llm
+  disabled: true
+- insert:
+    - id: llm-replay
+      name: '@deepseek-ai/dsh-llm-replay'
+      config:
+        file: __RUNTIME_DIR__/session.jsonl
+        overrideFile: __RUNTIME_DIR__/replay.override.json
+        providers:
+          - id: deepseek-official
+            name: DeepSeek
+            models:
+              - id: deepseek-v4-flash
+                contextWindow: 128000
+    - id: dsh-chief-readonly
+      name: '__REPO_ROOT__/tools/harness-spike/dsh-chief-readonly.ts'
+      config:
+        gatewayUrl: 'http://127.0.0.1:8001'
+        timeoutMs: 5000

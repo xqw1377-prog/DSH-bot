@@ -1,0 +1,8 @@
+# Spike 挂载补丁模板：__REPO_ROOT__ 由 verify.sh 渲染为绝对路径。
+# （loader 的相对路径按 profile home (~/.dsh/profiles/<name>) 解析，非 cwd）
+- insert:
+    - id: dsh-chief-readonly
+      name: '__REPO_ROOT__/tools/harness-spike/dsh-chief-readonly.ts'
+      config:
+        gatewayUrl: 'http://127.0.0.1:8001'
+        timeoutMs: 5000
