@@ -11,10 +11,12 @@
 import os
 from decimal import Decimal, InvalidOperation
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from dsh_contracts import Market
+
+from risk_policy.service_auth import require_service_key
 
 app = FastAPI(
     title="Risk Policy",
@@ -96,7 +98,7 @@ def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "risk-policy"}
 
 
-@app.get("/v1/risk-budget")
+@app.get("/v1/risk-budget", dependencies=[Depends(require_service_key)])
 def get_risk_budget(market: Market | None = None) -> list[dict]:
     budgets = _budgets.values()
     if market is not None:
@@ -104,7 +106,7 @@ def get_risk_budget(market: Market | None = None) -> list[dict]:
     return [b.model_dump(mode="json") for b in budgets]
 
 
-@app.get("/v1/risk-budget/{market}")
+@app.get("/v1/risk-budget/{market}", dependencies=[Depends(require_service_key)])
 def get_market_budget(market: Market) -> dict:
     budget = _budgets.get(market)
     if budget is None:
@@ -112,7 +114,7 @@ def get_market_budget(market: Market) -> dict:
     return budget.model_dump(mode="json")
 
 
-@app.post("/v1/check-order")
+@app.post("/v1/check-order", dependencies=[Depends(require_service_key)])
 def check_order(check: OrderRiskCheck) -> dict:
     budget = _budgets.get(check.market)
     if budget is None:

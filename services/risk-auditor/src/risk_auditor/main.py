@@ -11,7 +11,7 @@
 结论按（candidate, to_stage, evidence_hash）幂等：重复请求返回同一结论。
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from risk_auditor import storage
@@ -19,6 +19,8 @@ from risk_auditor import storage
 # 与 strategy-evolution 状态机的最少证据数一致，但独立计数
 MIN_EVIDENCE_REFS = 3
 STAGES_REQUIRING_APPROVAL = {"APPROVED", "CANARY", "PRODUCTION"}
+
+from risk_auditor.service_auth import require_service_key
 
 app = FastAPI(
     title="Risk Auditor",
@@ -43,7 +45,7 @@ def _hash_matches(refs: list[str], claimed: str) -> bool:
     return storage.evidence_hash(refs) == claimed
 
 
-@app.post("/v1/audit-promotion")
+@app.post("/v1/audit-promotion", dependencies=[Depends(require_service_key)])
 def audit_promotion(req: AuditPromotionRequest) -> dict:
     # 幂等：同一结论直接返回
     existing = storage.find_conclusion(
@@ -86,7 +88,7 @@ def _evaluate(req: AuditPromotionRequest) -> tuple[str, str]:
         f"approval bound")
 
 
-@app.get("/v1/conclusions/{candidate_id}")
+@app.get("/v1/conclusions/{candidate_id}", dependencies=[Depends(require_service_key)])
 def conclusions(candidate_id: str) -> list[dict]:
     with storage.locked_conn() as conn:
         rows = conn.execute(

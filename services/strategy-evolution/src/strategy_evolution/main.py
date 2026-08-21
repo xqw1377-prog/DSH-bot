@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import Depends, APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from dsh_contracts import Experiment, Market, StrategyCandidate, StrategyStage
@@ -111,6 +111,8 @@ _STAGES_REQUIRING_AUDITOR = {
     StrategyStage.APPROVED, StrategyStage.CANARY, StrategyStage.PRODUCTION,
 }
 
+from strategy_evolution.service_auth import require_service_key
+
 app = FastAPI(
     title="Strategy Evolution",
     description="策略持续进化服务。实验账本、验证门禁、晋级状态机。"
@@ -145,7 +147,7 @@ class PromotionRequest(BaseModel):
     idempotency_key: str | None = None
 
 
-v1 = APIRouter(prefix="/v1")
+v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_service_key)])
 
 
 # ---- 实验 ----
@@ -342,10 +344,14 @@ def _audit_with_risk_auditor(candidate: StrategyCandidate,
         "evidence_hash": ev_hash,
         "approval_id": req.approval_id,
     }
+    headers = None
+    auditor_key = os.environ.get("RISK_AUDITOR_API_KEY")
+    if auditor_key:
+        headers = {"X-API-Key": auditor_key}
     try:
         resp = httpx.post(
             auditor_url.rstrip("/") + "/v1/audit-promotion",
-            json=payload, timeout=5.0,
+            json=payload, headers=headers, timeout=5.0,
         )
     except httpx.HTTPError as exc:
         raise HTTPException(

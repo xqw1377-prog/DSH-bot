@@ -10,6 +10,8 @@ intent_digest 并保存；下单时校验订单意图摘要与审批绑定一致
 订单，杜绝「一次批准、重复下单」。
 """
 
+import os
+
 import hashlib
 import json
 import sqlite3
@@ -386,6 +388,10 @@ def check_order_risk(base_url: str | None = None, **payload) -> dict:
     绝不返回「通过」的猜测结果。
     """
     url = (base_url or RISK_POLICY_URL_DEFAULT).rstrip("/") + "/v1/check-order"
-    resp = httpx.post(url, json=payload, timeout=3.0)
+    headers = None
+    api_key = os.environ.get("RISK_POLICY_API_KEY")
+    if api_key:
+        headers = {"X-API-Key": api_key}
+    resp = httpx.post(url, json=payload, headers=headers, timeout=3.0)
     resp.raise_for_status()
     return resp.json()

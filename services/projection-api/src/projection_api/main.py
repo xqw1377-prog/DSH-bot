@@ -40,6 +40,11 @@ async def _proxy_get(base_url: str, path: str, params: dict | None = None):
     headers = {}
     if QUANT_GATEWAY_API_KEY and base_url.rstrip("/") == QUANT_GATEWAY_URL.rstrip("/"):
         headers["X-API-Key"] = QUANT_GATEWAY_API_KEY
+    # 策略进化服务鉴权(内部服务,生产失败关闭)
+    if base_url.rstrip("/") == STRATEGY_EVOLUTION_URL.rstrip("/"):
+        evolution_key = os.environ.get("STRATEGY_EVOLUTION_API_KEY")
+        if evolution_key:
+            headers["X-API-Key"] = evolution_key
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(

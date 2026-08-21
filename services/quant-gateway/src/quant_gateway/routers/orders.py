@@ -230,6 +230,35 @@ def _account_equity(adapter, account_id: str):
 @router.post("/markets/{market}/orders")
 def request_order(market: Market, intent: dict,
                   principal: Principal = Depends(require_write)):
+    """下单入口：所有拒绝路径统一落审计（网关是审计权威）。
+
+    之前只记成功不记拒绝——风控拦截、审批拒绝、幂等冲突全部不可追溯。
+    """
+    try:
+        return _request_order_impl(market, intent, principal)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else None
+        if detail and detail.get("error_code"):
+            audit.record(
+                "order.rejected",
+                service_principal=principal.name,
+                market=market.value,
+                subject_id=(
+                    str(intent.get("idempotency_key") or "")
+                    if isinstance(intent, dict) else ""
+                ),
+                detail=(
+                    f"error_code={detail.get('error_code')} "
+                    f"phase={detail.get('phase')} "
+                    f"submission_unknown={detail.get('submission_unknown')}: "
+                    f"{str(detail.get('message'))[:300]}"
+                ),
+            )
+        raise
+
+
+def _request_order_impl(market: Market, intent: dict,
+                        principal: Principal):
     require_market_runtime_service(principal, market)
     # 1. 契约校验：拒绝模糊或不完整的订单意图
     try:
@@ -309,35 +338,55 @@ def request_order(market: Market, intent: dict,
         # 仅当键已老化（超过在途窗口）才做恢复：新鲜的 RESERVED 属于并发在途，
         # venue 查不到不代表未接单。恢复顺序：找到即认领；明确不存在才释放重试。
         record = storage.get_idempotency_record(idempotency_key) or {}
-        age_seconds = _idempotency_age_seconds(record.get("updated_at"))
-        if age_seconds is None or age_seconds < SUBMISSION_UNKNOWN_GRACE_SECONDS:
-            raise structured_error(
-                409,
-                error_code="IDEMPOTENCY_IN_FLIGHT",
-                phase="SUBMITTING",
-                retryable=True,
-                submission_unknown=True,
-                message=(
-                    "idempotency key in flight (RESERVED without order_id); "
-                    "retry after grace period"
-                ),
-            )
-        recovered = adapter.find_order_by_idempotency_key(idempotency_key)
-        if recovered is not None and recovered.get("order_id"):
-            recovered_id = recovered["order_id"]
-            storage.finalize_idempotency_key(idempotency_key, recovered_id)
-            audit.record(
-                "order.submission_recovered",
-                service_principal=principal.name,
-                market=market.value,
-                subject_id=recovered_id,
-                detail=f"intent={idempotency_key} recovered from venue",
-            )
-            return {"order_id": recovered_id, "status": "SUBMITTED",
-                    "recovered": True}
-        if recovered is None:
-            consistency = getattr(adapter, "order_lookup_consistency", "UNSUPPORTED")
-            if consistency != "STRONG":
+        if record.get("status") != "FAILED":
+            # SUBMISSION_UNKNOWN：venue 可能已接单但网关在写库前崩溃。
+            # 仅当键已老化（超过在途窗口）才做恢复：新鲜的 RESERVED 属于并发在途，
+            # venue 查不到不代表未接单。恢复顺序：找到即认领；明确不存在才释放重试。
+            # （FAILED = 确定性失败如 venue 拒单后释放，不在途：直接重走完整门禁）
+            age_seconds = _idempotency_age_seconds(record.get("updated_at"))
+            if age_seconds is None or age_seconds < SUBMISSION_UNKNOWN_GRACE_SECONDS:
+                raise structured_error(
+                    409,
+                    error_code="IDEMPOTENCY_IN_FLIGHT",
+                    phase="SUBMITTING",
+                    retryable=True,
+                    submission_unknown=True,
+                    message=(
+                        "idempotency key in flight (RESERVED without order_id); "
+                        "retry after grace period"
+                    ),
+                )
+            recovered = adapter.find_order_by_idempotency_key(idempotency_key)
+            if recovered is not None and recovered.get("order_id"):
+                recovered_id = recovered["order_id"]
+                storage.finalize_idempotency_key(idempotency_key, recovered_id)
+                audit.record(
+                    "order.submission_recovered",
+                    service_principal=principal.name,
+                    market=market.value,
+                    subject_id=recovered_id,
+                    detail=f"intent={idempotency_key} recovered from venue",
+                )
+                return {"order_id": recovered_id, "status": "SUBMITTED",
+                        "recovered": True}
+            if recovered is None:
+                consistency = getattr(adapter, "order_lookup_consistency", "UNSUPPORTED")
+                if consistency != "STRONG":
+                    raise structured_error(
+                        409,
+                        error_code="SUBMISSION_UNKNOWN",
+                        phase="SUBMITTING",
+                        retryable=False,
+                        submission_unknown=True,
+                        message=(
+                            "submission unknown: venue lookup is not strongly consistent; "
+                            "resubmission blocked"
+                        ),
+                    )
+                # STRONG：venue 确认从未接受，释放幂等键后按新单继续走完整门禁
+                storage.mark_idempotency_failed(idempotency_key)
+            else:
+                # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提
                 raise structured_error(
                     409,
                     error_code="SUBMISSION_UNKNOWN",
@@ -345,25 +394,10 @@ def request_order(market: Market, intent: dict,
                     retryable=False,
                     submission_unknown=True,
                     message=(
-                        "submission unknown: venue lookup is not strongly consistent; "
-                        "resubmission blocked"
+                        "submission unknown: idempotency key occupied without "
+                        "order_id; venue lookup inconclusive; resubmission blocked"
                     ),
                 )
-            # STRONG：venue 确认从未接受，释放幂等键后按新单继续走完整门禁
-            storage.mark_idempotency_failed(idempotency_key)
-        else:
-            # 查询结果异常（无 order_id 的记录）：保持占用，禁止重提
-            raise structured_error(
-                409,
-                error_code="SUBMISSION_UNKNOWN",
-                phase="SUBMITTING",
-                retryable=False,
-                submission_unknown=True,
-                message=(
-                    "submission unknown: idempotency key occupied without "
-                    "order_id; venue lookup inconclusive; resubmission blocked"
-                ),
-            )
 
     # 3. 风险快照（失败关闭）：必须是网关在预览时签发的快照，
     #    且归属（市场/账户）、绑定摘要、新鲜度全部匹配本订单意图。
@@ -551,6 +585,18 @@ def request_order(market: Market, intent: dict,
     except HTTPException:
         raise
     except ValueError as exc:
+        # venue 明确拒单 = 确定从未接单：释放幂等键与已消费审批，
+        # 允许同一意图(同摘要)重试；换参数重试会被审批意图摘要拦截。
+        try:
+            storage.mark_idempotency_failed(idempotency_key)
+        except Exception as release_exc:  # 释放失败不能吞掉拒单事实
+            audit.record(
+                "order.release_failed",
+                service_principal=principal.name,
+                market=market.value,
+                subject_id=idempotency_key,
+                detail=f"venue rejected but release failed: {release_exc}",
+            )
         raise structured_error(
             422,
             error_code="VENUE_REJECTED",

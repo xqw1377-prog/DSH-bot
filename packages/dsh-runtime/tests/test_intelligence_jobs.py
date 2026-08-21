@@ -170,3 +170,77 @@ def test_official_snapshot_creates_shadow_and_follow_up(tmp_path, monkeypatch):
     assert result["can_apply"] is False
     assert result["trade_blocked"] is True
     reset()
+
+
+def test_us_spillover_enters_ashare_bot_as_observe(tmp_path, monkeypatch):
+    """第二刀：美股是 A 股 Bot 的输入面，但与持仓无关的事件只观察不决策。"""
+    reset()
+    (tmp_path / "INTELLIGENCE.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "event_id": "evt-us-halt",
+                        "title": "NASDAQ trade halt GRNQ Greenpro Capital Corp.",
+                        "canonical_url": "https://www.nasdaqtrader.com/halt",
+                        "published_at": "2026-08-20T04:00:00+00:00",
+                        "source_id": "sec-halts",
+                        "source_tier": "PRIMARY",
+                        "market": "US",
+                        "affected_assets": [],
+                        "direction": "UNCERTAIN",
+                        "confidence": "0.40",
+                        "event_type": "TRADE_HALT",
+                        "document_id": "doc-halt",
+                    },
+                    {
+                        "event_id": "evt-crypto-x",
+                        "title": "某币所上线新交易对",
+                        "canonical_url": "https://example.com/listing",
+                        "published_at": "2026-08-20T04:00:00+00:00",
+                        "source_id": "exchange-news",
+                        "source_tier": "SECONDARY",
+                        "market": "CRYPTO",
+                        "affected_assets": [],
+                        "direction": "UNCERTAIN",
+                        "confidence": "0.40",
+                        "event_type": "LISTING",
+                        "document_id": "doc-listing",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_GATEWAY_SNAPSHOT_DIR", str(tmp_path))
+    monkeypatch.delenv("DSH_A_SHARE_INTELLIGENCE_SOURCES", raising=False)
+    start = datetime(2026, 8, 20, 4, 0, tzinfo=UTC)
+    ashare = BotSession.for_profile(load_profile(PROFILES / "a-stock-bot" / "profile.yaml"))
+    created = BotIntelligenceJob(
+        bot_name="a-stock-bot",
+        market="A_SHARE",
+        source_env="DSH_A_SHARE_INTELLIGENCE_SOURCES",
+    ).run(ashare, holdings=[], marks={}, now=start)
+    # 美股事件进入 A 股 Bot；币市场事件不进
+    assert len(created) == 1
+    assert created[0]["event_market"] == "US"
+    # 与持仓无关：只观察，不形成 Shadow 决策
+    assert created[0]["action"] == "WATCH"
+    assert created[0]["execution_lane"] == "OBSERVE"
+    assert ashare.tasks.find_by_status("SHADOW_RECORDED") == []
+    # 但观察同样入决策账本：有事件链 ID 与原文证据
+    row = ashare.ledger.find_by_intelligence_item(created[0]["item_id"])
+    assert row is not None
+    assert row["status"] == "OBSERVE"
+    assert row["event_id"] == "evt-us-halt"
+    assert row["evidence_refs"]
+    # 重跑幂等：不重复入账
+    again = BotIntelligenceJob(
+        bot_name="a-stock-bot",
+        market="A_SHARE",
+        source_env="DSH_A_SHARE_INTELLIGENCE_SOURCES",
+    ).run(ashare, holdings=[], marks={}, now=start + timedelta(minutes=5))
+    assert again == []
+    assert len(ashare.intelligence.list(limit=10)) == 1
+    reset()

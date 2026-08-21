@@ -565,3 +565,108 @@ def test_approval_consume_release_state_machine(client, risk_pass):
     stored = approval_store.get_approval(approval_id)
     assert stored is not None and stored.status == ApprovalStatus.CONSUMED
     assert stored.consumed_order_id == "ord-sm"
+
+
+# ---- P1: 拒绝路径审计 / venue 拒单释放 / STRONG 恢复 ----
+
+def _audit_rows(action: str) -> list:
+    from quant_gateway import audit as audit_mod
+    from quant_gateway import storage as gw_storage
+    with gw_storage.locked_conn() as conn:
+        rows = conn.execute(
+            "SELECT action, market, subject_id, outcome, detail FROM audit_log "
+            "WHERE action = ? ORDER BY occurred_at", (action,)
+        ).fetchall()
+    keys = ("action", "market", "subject_id", "outcome", "detail")
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def _patch_venue_reject(monkeypatch):
+    """让当前 A_SHARE 适配器拒单(明确 ValueError,非未知状态)。"""
+    from quant_gateway.adapters import get_adapter
+    adapter = get_adapter(Market.A_SHARE)
+
+    def reject(intent):
+        raise ValueError("venue rejected: insufficient balance")
+
+    monkeypatch.setattr(adapter, "request_order", reject)
+
+
+def test_rejection_paths_are_audited(client, risk_pass):
+    """风控拦截必须落审计:网关是审计权威,拒绝不可只活在响应里。"""
+    resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
+    assert resp.status_code == 422
+    rows = _audit_rows("order.rejected")
+    assert rows, "RISK_SNAPSHOT_MISSING rejection must be audited"
+    assert "error_code=RISK_SNAPSHOT_MISSING" in rows[-1]["detail"]
+    assert rows[-1]["market"] == "A_SHARE"
+    assert rows[-1]["subject_id"] == "key-1"
+
+
+def test_data_unavailable_rejection_audited(client, monkeypatch):
+    """equity 不可用拒单也要落审计(带 DATA_UNAVAILABLE)。"""
+    from quant_gateway.adapters import get_adapter
+    adapter = get_adapter(Market.A_SHARE)
+    monkeypatch.setattr(adapter, "get_account_summary", lambda: [])
+    register_risk_snapshot(make_snapshot())
+    resp = client.post("/v1/markets/A_SHARE/orders", json=make_intent())
+    assert resp.status_code == 422
+    assert "equity unavailable" in resp.json()["detail"]["message"]
+    rows = _audit_rows("order.rejected")
+    assert any("error_code=DATA_UNAVAILABLE" in r["detail"] for r in rows)
+
+
+def test_venue_reject_releases_key_and_approval(client, risk_pass, monkeypatch):
+    """venue 明确拒单:幂等键 FAILED、审批释放回 APPROVED,同意图可重试。"""
+    register_risk_snapshot(make_snapshot())
+    approval_id = approved_approval()
+    body = make_intent(idempotency_key="venue-rej-1", approval_id=approval_id)
+    _patch_venue_reject(monkeypatch)
+
+    resp = client.post("/v1/markets/A_SHARE/orders", json=body)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error_code"] == "VENUE_REJECTED"
+
+    from quant_gateway import storage as gw_storage
+    # 审批已释放回 APPROVED(可按同一意图重试),消费痕迹清除
+    approval = approval_store.get_approval(approval_id)
+    assert approval.status == ApprovalStatus.APPROVED
+    assert approval.consumed_key is None
+    # 幂等键标 FAILED:同键同请求体可重走完整门禁
+    record = gw_storage.get_idempotency_record("venue-rej-1")
+    assert record["status"] == "FAILED"
+    # 拒单事实落审计
+    assert any(
+        "error_code=VENUE_REJECTED" in r["detail"]
+        for r in _audit_rows("order.rejected")
+    )
+
+
+def test_venue_reject_then_same_intent_can_retry(client, risk_pass, monkeypatch):
+    """释放后:同一意图+新审批可重试成功。"""
+    from quant_gateway import storage as gw_storage
+    register_risk_snapshot(make_snapshot())
+    first_approval = approved_approval()
+    body = make_intent(idempotency_key="retry-1", approval_id=first_approval)
+    from quant_gateway.adapters import get_adapter
+    adapter = get_adapter(Market.A_SHARE)
+    orig_submit = adapter.request_order
+    adapter.request_order = lambda intent: (_ for _ in ()).throw(
+        ValueError("venue rejected: limit move"))
+    assert client.post("/v1/markets/A_SHARE/orders", json=body).status_code == 422
+    adapter.request_order = orig_submit
+
+    # 审批已释放回 APPROVED:同一审批 + 同一意图(同请求体)可重试。
+    # 请求体哈希包含 approval_id——换审批会 409 IDEMPOTENCY_CONFLICT,
+    # 这是刻意的严格语义:同键必须同请求体。
+    resp = client.post(
+        "/v1/markets/A_SHARE/orders",
+        json=make_intent(idempotency_key="retry-1", approval_id=first_approval),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "SUBMITTED"
+
+
+def test_paper_adapter_declares_strong_consistency():
+    from quant_gateway.adapters.paper import PaperAdapter
+    assert PaperAdapter.order_lookup_consistency == "STRONG"

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from intelligence_ingest.isolation import IsolationError, assert_isolated
 from intelligence_ingest.pipeline import ingest_once
 from intelligence_ingest.registry import load_registry, x_filter_rules
 from intelligence_ingest.store import IntelligenceStore
+
+from intelligence_ingest.service_auth import require_service_key
 
 app = FastAPI(
     title="DSH Intelligence Ingest",
@@ -26,7 +28,7 @@ def healthz() -> dict:
     return {"status": "ok", "service": "intelligence-ingest", "mode": "SHADOW"}
 
 
-@app.get("/v1/sources")
+@app.get("/v1/sources", dependencies=[Depends(require_service_key)])
 def list_sources() -> dict:
     registry = load_registry()
     return {
@@ -38,17 +40,17 @@ def list_sources() -> dict:
     }
 
 
-@app.get("/v1/documents")
+@app.get("/v1/documents", dependencies=[Depends(require_service_key)])
 def list_documents(limit: int = 50) -> list[dict]:
     return IntelligenceStore().recent_documents(limit)
 
 
-@app.get("/v1/events")
+@app.get("/v1/events", dependencies=[Depends(require_service_key)])
 def list_events(limit: int = 50) -> list[dict]:
     return IntelligenceStore().recent_events(limit)
 
 
-@app.get("/v1/source-health")
+@app.get("/v1/source-health", dependencies=[Depends(require_service_key)])
 def source_health() -> list[dict]:
     """源健康状态:连续失败、最近成功/失败时间、恢复时间。
 
@@ -58,7 +60,7 @@ def source_health() -> list[dict]:
     return IntelligenceStore().list_source_health()
 
 
-@app.post("/v1/ingest")
+@app.post("/v1/ingest", dependencies=[Depends(require_service_key)])
 def run_ingest(include_derived: bool = False) -> dict:
     try:
         return ingest_once(include_derived=include_derived)

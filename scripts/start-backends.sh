@@ -27,6 +27,14 @@ if [[ "${DSH_LOCAL_PAPER:-0}" == "1" ]]; then
   exit 1
 fi
 
+for _key_var in RISK_POLICY_API_KEY STRATEGY_EVOLUTION_API_KEY                STRATEGY_EVOLUTION_GATEWAY_API_KEY RISK_AUDITOR_API_KEY                INCIDENT_CENTER_API_KEYS INTELLIGENCE_INGEST_API_KEYS; do
+  if [[ -z "${!_key_var:-}" ]]; then
+    echo "refusing to start: internal services are fail-closed in production;" >&2
+    echo "set $_key_var (and friends) before starting backends." >&2
+    exit 1
+  fi
+done
+
 if [[ -z "${STRATEGY_EVOLUTION_AUDITOR_URL:-${RISK_AUDITOR_URL:-}}" ]]; then
   echo "refusing to start: STRATEGY_EVOLUTION_AUDITOR_URL (or RISK_AUDITOR_URL) is required." >&2
   exit 1

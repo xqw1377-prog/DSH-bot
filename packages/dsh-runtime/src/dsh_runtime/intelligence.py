@@ -193,7 +193,9 @@ def official_snapshot_items(
             if not symbol and event_market not in {"CRYPTO", ""}:
                 continue
         elif market == "A_SHARE":
-            if event_market != "A_SHARE":
+            # A 股 Bot 的输入面 = 国内政策/美股/公司公告：
+            # 美股市场级事件作为外溢观察放行，不在此处判重要性
+            if event_market not in {"A_SHARE", "US", "GLOBAL"}:
                 continue
         spec = SourceSpec(
             source_id=str(raw.get("source_id") or "official-ingest"),
@@ -538,7 +540,7 @@ class BotIntelligenceJob:
         market_wide = (
             not symbol
             and self.market == "A_SHARE"
-            and event_market in {"A_SHARE", "GLOBAL"}
+            and event_market in {"A_SHARE", "US", "GLOBAL"}
         )
         if not watched and not held and not market_wide and self.market != "GLOBAL":
             return None
@@ -606,22 +608,24 @@ class BotIntelligenceJob:
             payload=payload,
         )
         payload["item_id"] = item_id
-        if inserted:
-            session.events.emit(
-                "intelligence/ingested",
-                self.market,
-                "bot",
-                self.bot_name,
-                {
-                    "item_id": item_id,
-                    "source_id": spec.source_id,
-                    "market": self.market,
-                    "symbol": symbol or None,
-                    "title": title,
-                    "source_url": source_url or None,
-                    "published_at": published_at or payload["observed_at"],
-                },
-            )
+        if not inserted:
+            # 重复信息不重复决策：已入库事件不再评估、不再入账
+            return None
+        session.events.emit(
+            "intelligence/ingested",
+            self.market,
+            "bot",
+            self.bot_name,
+            {
+                "item_id": item_id,
+                "source_id": spec.source_id,
+                "market": self.market,
+                "symbol": symbol or None,
+                "title": title,
+                "source_url": source_url or None,
+                "published_at": published_at or payload["observed_at"],
+            },
+        )
         session.events.emit(
             "intelligence/impact.assessed",
             self.market,
@@ -654,14 +658,21 @@ class BotIntelligenceJob:
         payload["requires_approval"] = needs_approval
         payload["event_id"] = raw.get("event_id")
         payload["event_type"] = raw.get("event_type")
+        payload["event_market"] = event_market
+        if market_wide and not held and not watched:
+            # 市场级事件但与持仓/观察池无关：只观察不决策——
+            # 决策是噪音，不记录是失明。OBSERVE 同样入决策账本。
+            payload["action"] = "WATCH"
+            payload["execution_lane"] = "OBSERVE"
         has_evidence = bool(payload.get("evidence_refs"))
         if not has_evidence:
             # 无证据不成决策:即使 importance 达标也只观察,不形成 Shadow
             payload["no_shadow_reason"] = "missing_evidence"
-        if (inserted and importance >= 0.55 and lane_allows_shadow(lane)
+        if (importance >= 0.55
+                and lane_allows_shadow(payload["execution_lane"])
                 and has_evidence):
             self._record_shadow(session, payload)
-        elif inserted:
+        else:
             self._write_ledger(session, payload, task_id=None, status="OBSERVE")
         return payload
 

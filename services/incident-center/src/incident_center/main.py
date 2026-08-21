@@ -18,8 +18,10 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+
+from incident_center.service_auth import require_service_key
 
 app = FastAPI(
     title="Incident Center",
@@ -136,7 +138,7 @@ class IncidentAction(BaseModel):
     note: str | None = None
 
 
-@app.post("/v1/incidents", status_code=201)
+@app.post("/v1/incidents", status_code=201, dependencies=[Depends(require_service_key)])
 def open_incident(req: IncidentOpen) -> dict:
     """上报语义（消息幂等与指纹合并分离）：
 
@@ -212,7 +214,7 @@ def _get_incident(conn, incident_id: str) -> dict:
     return dict(zip(keys, row))
 
 
-@app.get("/v1/incidents")
+@app.get("/v1/incidents", dependencies=[Depends(require_service_key)])
 def list_incidents(status: str | None = None,
                    market: str | None = None) -> list[dict]:
     with locked_conn() as conn:
@@ -230,7 +232,7 @@ def list_incidents(status: str | None = None,
     return out
 
 
-@app.get("/v1/incidents/{incident_id}")
+@app.get("/v1/incidents/{incident_id}", dependencies=[Depends(require_service_key)])
 def get_incident(incident_id: str) -> dict:
     with locked_conn() as conn:
         try:
@@ -239,12 +241,12 @@ def get_incident(incident_id: str) -> dict:
             raise HTTPException(status_code=404, detail="incident not found")
 
 
-@app.post("/v1/incidents/{incident_id}/mitigate")
+@app.post("/v1/incidents/{incident_id}/mitigate", dependencies=[Depends(require_service_key)])
 def mitigate(incident_id: str, req: IncidentAction) -> dict:
     return _transition(incident_id, "MITIGATED", req)
 
 
-@app.post("/v1/incidents/{incident_id}/resolve")
+@app.post("/v1/incidents/{incident_id}/resolve", dependencies=[Depends(require_service_key)])
 def resolve(incident_id: str, req: IncidentAction) -> dict:
     return _transition(incident_id, "RESOLVED", req)
 
@@ -271,7 +273,7 @@ def _transition(incident_id: str, target: str, req: IncidentAction) -> dict:
         return _get_incident(conn, incident_id)
 
 
-@app.get("/v1/incidents/{incident_id}/timeline")
+@app.get("/v1/incidents/{incident_id}/timeline", dependencies=[Depends(require_service_key)])
 def timeline(incident_id: str) -> list[dict]:
     with locked_conn() as conn:
         rows = conn.execute(
