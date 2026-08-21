@@ -40,3 +40,6 @@ logs/
 node_modules/
 .venv/
 *.tsbuildinfo
+
+# 包内 schema 副本由 scripts/sync_event_schemas.py 生成(源码树为准)
+packages/dsh-runtime/src/dsh_runtime/event-schemas/

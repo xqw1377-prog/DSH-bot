@@ -11,3 +11,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# event-schemas 包内副本(wheel 安装备份路径),由 scripts/sync_event_schemas.py 同步
+[tool.setuptools.package-data]
+dsh_runtime = ["event-schemas/**/*.json"]

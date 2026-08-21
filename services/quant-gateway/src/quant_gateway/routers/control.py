@@ -58,11 +58,15 @@ def resume_kill_switch(
     principal: Principal = Depends(require_write),
     actor_principal: str = Depends(require_actor_principal),
 ):
-    """Kill Switch 人工恢复。使用独立事件，不再借用 strategy.resumed。"""
+    """Kill Switch 人工恢复。使用独立事件，不再借用 strategy.resumed。
+
+    恢复语义:只解除交易通道停机(resume_trading),不越权恢复具体策略
+    ——账户 ID 不是策略 ID,"*" 恢复全部策略更越权。策略恢复走
+    /strategies/{id}/resume,那是独立的、需另行授权的动作。
+    """
     require_bff_service(principal)
     adapter = get_adapter(market)
     adapter.resume_trading()
-    adapter.resume_strategy(account_id or "*")
     audit.record(
         "kill_switch.resumed",
         service_principal=principal.name,

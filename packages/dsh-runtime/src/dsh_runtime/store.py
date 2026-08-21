@@ -279,12 +279,23 @@ class Memory:
         ]
 
     def has_tagged(self, tag: str) -> bool:
-        """去重判断：该 tag 是否已记录（如已处理过的 signal_id）。"""
-        row = _get().execute(
-            "SELECT 1 FROM agent_memory WHERE bot = ? AND tags LIKE ? LIMIT 1",
+        """去重判断：该 tag 是否已记录（如已处理过的 signal_id）。
+
+        tags 是 JSON 数组,按元素精确匹配——LIKE '%tag%' 会把
+        "sig-1" 误匹配到 "sig-10",以及含引号的 tag 永远匹配不上。
+        """
+        rows = _get().execute(
+            "SELECT tags FROM agent_memory WHERE bot = ? AND tags LIKE ?",
             (self.bot, f'%"{tag}"%'),
-        ).fetchone()
-        return row is not None
+        ).fetchall()
+        for row in rows:
+            try:
+                tags = json.loads(row[0] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if tag in tags:
+                return True
+        return False
 
 
 class IntelligenceStore:
@@ -1117,11 +1128,35 @@ class EventLog:
     而不是让坏事件流进账本。"""
     _validator_cache: dict[str, object] = {}
 
+    _schema_dir_cache: Path | None = None
+
     @classmethod
     def _schema_dir(cls):
-        # store.py 位于 <root>/packages/dsh-runtime/src/dsh_runtime/，
-        # parents[3] 即 <root>/packages
-        return Path(__file__).resolve().parents[3] / "event-schemas"
+        """event-schemas 目录:源码树布局优先,wheel 安装回退包内副本。
+
+        只依赖 parents[3] 的相对路径在 pip 安装(非 editable)后失效,
+        会让所有 emit 抛 "no payload schema"。候选:
+        1. 源码树 <root>/packages/event-schemas(editable 开发)
+        2. 包内打包副本 dsh_runtime/event-schemas(wheel 安装)
+        """
+        import os
+
+        if cls._schema_dir_cache is not None:
+            return cls._schema_dir_cache
+        env_dir = os.environ.get("DSH_EVENT_SCHEMAS_DIR")
+        candidates = [
+            Path(env_dir) if env_dir else None,
+            Path(__file__).resolve().parents[3] / "event-schemas",
+            Path(__file__).resolve().parent / "event-schemas",
+        ]
+        candidates = [c for c in candidates if c is not None]
+        for candidate in candidates:
+            if (candidate / "envelope.json").is_file():
+                cls._schema_dir_cache = candidate
+                return candidate
+        raise ValueError(
+            "event-schemas directory not found (source tree or package data)"
+        )
 
     @classmethod
     def _validator_for(cls, event_type: str):

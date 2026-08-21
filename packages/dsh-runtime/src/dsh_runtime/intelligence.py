@@ -222,6 +222,7 @@ def official_snapshot_items(
             "event_type": raw.get("event_type"),
             "event_id": raw.get("event_id"),
             "event_market": event_market,
+            "cluster_key": raw.get("cluster_key") or "",
             "tags": [raw.get("event_type")] if raw.get("event_type") else [],
         }
         items.append((spec, mapped))

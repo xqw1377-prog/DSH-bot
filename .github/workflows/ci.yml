@@ -17,6 +17,8 @@ jobs:
           PKGS=$(find packages services plugins -name pyproject.toml \
             -exec dirname {} \; | sed 's/^/-e /' | tr '\n' ' ')
           pip install $PKGS pytest
+      - name: Sync event schemas into package
+        run: python scripts/sync_event_schemas.py
       - name: Schema compatibility check
         run: python scripts/check_schemas.py
       - name: Lint (ruff)

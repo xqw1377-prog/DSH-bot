@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import timedelta, UTC, datetime
 from decimal import Decimal
 
 import httpx
@@ -95,7 +95,19 @@ class HttpReadOnlyAdapter(MarketAdapter):
     def get_signals(self):
         raw = self._get("/signals")
         items = raw if isinstance(raw, list) else raw.get("signals", [])
+        # 时间戳以上游为准;此前一律置 now,快照信号下一秒就被判过期
         now = datetime.now(UTC)
+        horizon = timedelta(minutes=30)
+
+        def _ts(item, key):
+            value = item.get(key)
+            if value:
+                try:
+                    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+                except ValueError:
+                    pass
+            return now
         return [
             Signal(
                 signal_id=item.get("signal_id", ""),
@@ -105,8 +117,8 @@ class HttpReadOnlyAdapter(MarketAdapter):
                 symbol=item.get("symbol", ""),
                 side=item.get("side", "BUY"),
                 strength=item.get("strength"),
-                generated_at=now,
-                valid_until=now,
+                generated_at=_ts(item, 'generated_at'),
+                valid_until=_ts(item, 'valid_until') if item.get('valid_until') else (now + horizon),
                 data_snapshot_id=item.get("data_snapshot_id", "upstream"),
             )
             for item in items

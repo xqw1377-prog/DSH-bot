@@ -192,6 +192,23 @@ def test_us_spillover_enters_ashare_bot_as_observe(tmp_path, monkeypatch):
                         "confidence": "0.40",
                         "event_type": "TRADE_HALT",
                         "document_id": "doc-halt",
+                        "cluster_key": "clu-nasdaq-grnq",
+                    },
+                    {
+                        # 同一事件的转载：同 cluster_key 不同源，只形成一条决策
+                        "event_id": "evt-us-halt-repost",
+                        "title": "NASDAQ trade halt GRNQ Greenpro Capital Corp.",
+                        "canonical_url": "https://example-news.com/repost-grnq",
+                        "published_at": "2026-08-20T04:30:00+00:00",
+                        "source_id": "news-repost",
+                        "source_tier": "SECONDARY",
+                        "market": "US",
+                        "affected_assets": [],
+                        "direction": "NEGATIVE",
+                        "confidence": "0.55",
+                        "event_type": "TRADE_HALT",
+                        "document_id": "doc-halt-repost",
+                        "cluster_key": "clu-nasdaq-grnq",
                     },
                     {
                         "event_id": "evt-crypto-x",
@@ -236,7 +253,8 @@ def test_us_spillover_enters_ashare_bot_as_observe(tmp_path, monkeypatch):
         market="A_SHARE",
         source_env="DSH_A_SHARE_INTELLIGENCE_SOURCES",
     ).run(ashare, holdings=[], marks={}, now=start)
-    # 美股事件进入 A 股 Bot；币市场事件不进
+    # 美股事件进入 A 股 Bot；币市场事件不进；
+    # 同 cluster_key 的转载不重复决策（双源只入账首条）
     assert len(created) == 1
     assert created[0]["event_market"] == "US"
     # 与持仓无关：只观察，不形成 Shadow 决策

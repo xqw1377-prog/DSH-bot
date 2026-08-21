@@ -40,6 +40,15 @@ def paper_account_id(market: Market) -> str:
     return os.environ.get("PAPER_CRYPTO_ACCOUNT_ID", "paper-crypto-001")
 
 
+def _unique_order_suffix() -> str:
+    """微秒时间戳 + 进程号 + 随机数:多进程并发不碰撞。"""
+    import os as _os
+    import random as _random
+    import time as _time
+
+    return f"{int(_time.time() * 1_000_000):x}-{_os.getpid():x}-{_random.getrandbits(16):04x}"
+
+
 class PaperAdapter(MarketAdapter):
     """代表现有量化系统的本地纸上实现。"""
 
@@ -177,7 +186,9 @@ class PaperAdapter(MarketAdapter):
                 f"unknown paper account_id={payload.get('account_id')}; "
                 f"expected={self._account_id}"
             )
-        order_id = f"{self.market.value}-paper-{next(self._ids)}"
+        # 订单号全局唯一:时间到微秒 + 进程/随机后缀。
+        # 此前用每进程 count(1),多 worker 同时启动会互相碰撞。
+        order_id = f"{self.market.value}-paper-{_unique_order_suffix()}"
         avg_price = self._price
         filled_at = _now().isoformat()
         quantity = Decimal(str(payload.get("quantity", "0")))

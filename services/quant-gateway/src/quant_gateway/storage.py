@@ -142,6 +142,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             "NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
         )
     audit_cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    if "entry_hash" not in audit_cols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT")
+        conn.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT")
+        audit_cols |= {"prev_hash", "entry_hash"}
     added_service_principal = False
     if "service_principal" not in audit_cols:
         conn.execute("ALTER TABLE audit_log ADD COLUMN service_principal TEXT")
@@ -198,13 +202,16 @@ def get_risk_snapshot(snapshot_id: str) -> dict | None:
 
 
 def save_paper_order(order_id: str, market: str, payload: dict) -> None:
+    """订单 INSERT-only:同一 order_id 二次写入必须失败。
+
+    订单是权威事实,静默覆盖等于改写成交历史;碰撞即 bug,让它响。
+    """
     import json
 
     with locked_conn() as conn:
         conn.execute(
             """INSERT INTO paper_orders (order_id, market, payload)
-               VALUES (?, ?, ?)
-               ON CONFLICT(order_id) DO UPDATE SET payload = excluded.payload""",
+               VALUES (?, ?, ?)""",
             (order_id, market, json.dumps(payload, ensure_ascii=False)),
         )
         conn.commit()

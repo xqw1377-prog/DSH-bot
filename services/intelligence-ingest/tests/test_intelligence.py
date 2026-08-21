@@ -193,6 +193,17 @@ def test_extract_infers_direction_deterministically():
     assert uncertain["confidence"] == "0.40"
 
 
+def test_event_cluster_key_merges_same_title_across_sources():
+    """归并键只合并规范化后同标题的转载/通稿；不同标题不误并。"""
+    from intelligence_ingest.extract import event_cluster_key
+
+    a = event_cluster_key("NASDAQ trade halt GRNQ!", "TRADE_HALT", [])
+    b = event_cluster_key("nasdaq trade halt grnq", "TRADE_HALT", [])
+    assert a == b
+    c = event_cluster_key("NASDAQ trade halt SDOT", "TRADE_HALT", [])
+    assert a != c
+
+
 def test_feed_extract_and_shadow_score(tmp_path):
     from intelligence_ingest.registry import SourceSpec
 

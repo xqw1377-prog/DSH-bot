@@ -66,3 +66,8 @@ def run_ingest(include_derived: bool = False) -> dict:
         return ingest_once(include_derived=include_derived)
     except IsolationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+# Prometheus 指标:infra/observability/prometheus.yml 抓取 /metrics
+from prometheus_client import make_asgi_app  # noqa: E402
+
+app.mount("/metrics", make_asgi_app())

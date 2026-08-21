@@ -88,6 +88,22 @@ services:
     networks:
       - dsh
 
+  intelligence-ingest:
+    build:
+      context: ../..
+      dockerfile: infra/containers/services/intelligence-ingest.Dockerfile
+    ports:
+      - "8007:8007"
+    environment:
+      - INTELLIGENCE_DB=/data/intelligence.db
+      - QUANT_GATEWAY_SNAPSHOT_DIR=/data/snapshots
+      - INTELLIGENCE_INGEST_API_KEYS=${INTELLIGENCE_INGEST_API_KEYS:-}
+      - DSH_ENV=production
+    volumes:
+      - intel-data:/data
+    networks:
+      - dsh
+
   dsh-bot-web:
     build:
       context: ../..
@@ -114,5 +130,6 @@ networks:
 
 volumes:
   gateway-data:
+  intel-data:
   runtime-data:
   auditor-data:
