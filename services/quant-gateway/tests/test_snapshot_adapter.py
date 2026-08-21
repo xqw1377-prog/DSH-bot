@@ -142,7 +142,45 @@ def test_snapshot_metadata_and_skips_screen_results(tmp_path):
     assert health.source_mode == "paper"
     assert health.trading_channel_ok is False
     assert health.as_of.isoformat().startswith("2026-08-18T02:00:05")
+    assert health.exported_at is not None
+    assert health.snapshot_age_seconds is not None
+    assert health.snapshot_age_seconds > 90
+    assert health.data_fresh is False
     assert adapter.get_signals() == []
+
+
+def test_recent_export_keeps_closed_snapshot_fresh(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    path = tmp_path / "A_SHARE.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source_system": "zisu",
+                "source_mode": "paper",
+                "source_observed_at": (now - timedelta(hours=4)).isoformat(),
+                "exported_at": (now - timedelta(seconds=8)).isoformat(),
+                "data_fresh": True,
+                "health": {
+                    "system_ok": True,
+                    "data_fresh": True,
+                    "trading_channel_ok": False,
+                    "market_session": "CLOSED",
+                },
+                "positions": [],
+                "accounts": [],
+                "signals": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    health = SnapshotAdapter(Market.A_SHARE, path).get_health()
+    assert health.data_fresh is True
+    assert health.export_age_seconds is not None
+    assert health.export_age_seconds < 90
+    assert health.snapshot_age_seconds is not None
+    assert health.snapshot_age_seconds > 90
 
 
 def test_public_ticker_fail_closed_freshness(tmp_path, monkeypatch):

@@ -8,6 +8,8 @@ primary_tools:
   - approval_initiation
   - incident_alert
   - report_generation
+  - intelligence_review
+  - audit_review
 prohibited:
   - direct_order
   - credential_access

@@ -9,7 +9,7 @@ if [[ -f .venv/bin/activate ]]; then
   source .venv/bin/activate
 fi
 
-export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/packages/dsh-snapshot-bridge/src:$ROOT/services/quant-gateway/src:$ROOT/services/projection-api/src:$ROOT/services/risk-policy/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-a-stock-agent/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/packages/domain-contracts/src:$ROOT/packages/dsh-runtime/src:$ROOT/packages/dsh-snapshot-bridge/src:$ROOT/services/quant-gateway/src:$ROOT/services/projection-api/src:$ROOT/services/risk-policy/src:$ROOT/plugins/dsh-quant-gateway/src:$ROOT/plugins/dsh-trade-approval/src:$ROOT/plugins/dsh-crypto-agent/src:$ROOT/plugins/dsh-a-stock-agent/src:$ROOT/plugins/dsh-market-chief/src${PYTHONPATH:+:$PYTHONPATH}"
 
 SMOKE="${SMOKE_DIR:-$ROOT/.data/shadow-smoke}"
 rm -rf "$SMOKE"
@@ -64,6 +64,22 @@ state = {
 state_path = smoke / "src" / "state.json"
 state_path.parent.mkdir(parents=True, exist_ok=True)
 state_path.write_text(json.dumps(state), encoding="utf-8")
+(state_path.parent / "signals.jsonl").write_text(
+    json.dumps(
+        {
+            "client_order_id": "smoke-crypto-1",
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "action": "pending",
+            "signal_type": "V5",
+            "signal_tier": "S",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "entry_price": "67000.00",
+        }
+    )
+    + "\n",
+    encoding="utf-8",
+)
 print(state_path)
 PY
 
@@ -91,10 +107,34 @@ WALLET = {
     "recent_trades": [],
 }
 SCREEN = {"actionable": [{"symbol": "600519.SH", "policy_action": "buy", "executable": True, "engine_id": "leaf"}]}
+COCKPIT = {
+    "policy_decisions": {
+        "_decision_event_id": "smoke-evt",
+        "contract_version": "zisu-smoke",
+        "quotes_updated_at": "2026-08-18T02:00:00+00:00",
+        "decisions": [
+            {
+                "symbol": "600519.SH",
+                "action": "buy",
+                "executable": True,
+                "engine_id": "leaf",
+                "thesis_id": "smoke",
+                "evidence_score": 0.8,
+                "reasons": ["smoke"],
+                "leaf_signal": {"confidence": 0.8},
+            }
+        ],
+    }
+}
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = WALLET if self.path.endswith("/wallet") else SCREEN
+        if self.path.endswith("/wallet"):
+            body = WALLET
+        elif self.path.endswith("/cockpit"):
+            body = COCKPIT
+        else:
+            body = SCREEN
         data = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -124,8 +164,10 @@ assert crypto["account_id"] == "paper-crypto-001"
 assert ashare["account_id"] == "paper-a-share-001"
 assert ashare["positions"][0]["symbol"] == "600519"
 assert ashare["positions"][0]["source_symbol"] == "600519.SH"
-assert ashare["signals"] == []
+assert crypto["signals"] and crypto["signals"][0]["signal_id"] == "smoke-crypto-1"
+assert ashare["signals"] and ashare["signals"][0]["symbol"] == "600519"
 assert ashare["screen_results"][0]["kind"] == "SCREEN_RESULT"
+assert all(row.get("kind") != "SCREEN_RESULT" for row in ashare["signals"])
 assert crypto["health"]["trading_channel_ok"] is False
 print("snapshot fixtures ok")
 PY
@@ -179,6 +221,20 @@ for i in 1 2 3; do
   python scripts/run_crypto_bot.py --gateway http://127.0.0.1:8011 --api-key shadow-read --mode shadow --once
   python scripts/run_a_stock_bot.py --gateway http://127.0.0.1:8011 --api-key shadow-read --mode shadow --once
 done
+python - <<'PY'
+from pathlib import Path
+import sys
+ROOT = Path.cwd()
+sys.path.insert(0, str(ROOT / "plugins" / "dsh-market-chief" / "src"))
+sys.path.insert(0, str(ROOT / "plugins" / "dsh-quant-gateway" / "src"))
+from dsh_gateway_client import GatewayClient
+from dsh_market_chief import MarketChiefAgent
+from dsh_runtime import BotSession, load_profile, run_once
+gateway = GatewayClient(base_url="http://127.0.0.1:8011", api_key="shadow-read")
+profile = load_profile(ROOT / "profiles" / "market-chief" / "profile.yaml")
+run_once(BotSession.for_profile(profile), MarketChiefAgent(gateway=gateway))
+print("chief briefing tick ok")
+PY
 if python scripts/run_crypto_bot.py --mode live; then
   echo "live must fail" >&2
   exit 1
@@ -187,17 +243,17 @@ fi
 python - <<'PY'
 import os, sqlite3
 from pathlib import Path
-db = Path(os.environ["QUANT_GATEWAY_DB"])
-conn = sqlite3.connect(db)
-def count(sql):
+gw = sqlite3.connect(os.environ["QUANT_GATEWAY_DB"])
+def count(conn, sql):
     try:
         return conn.execute(sql).fetchone()[0]
     except sqlite3.OperationalError:
         return 0
-approvals = count("select count(*) from approvals")
-orders = count("select count(*) from paper_orders")
-cancels = count("select count(*) from audit_log where action like '%cancel%'")
+approvals = count(gw, "select count(*) from approvals")
+orders = count(gw, "select count(*) from paper_orders")
+cancels = count(gw, "select count(*) from audit_log where action like '%cancel%'")
 writes = count(
+    gw,
     "select count(*) from audit_log where action in "
     "('order.submitted','order.cancelled','approval.decided','emergency.stop')"
 )
@@ -205,5 +261,18 @@ assert approvals == 0, approvals
 assert orders == 0, orders
 assert cancels == 0, cancels
 assert writes == 0, writes
-print("shadow smoke ok")
+rt = sqlite3.connect(os.environ["DSH_RUNTIME_DB"])
+shadow = rt.execute(
+    "select bot, subject_id, count(*) from bot_tasks"
+    " where status='SHADOW_RECORDED' group by bot, subject_id"
+).fetchall()
+assert shadow, shadow
+bots = {row[0] for row in shadow}
+assert "crypto-bot" in bots and "a-stock-bot" in bots, shadow
+assert all(row[2] == 1 for row in shadow), shadow
+brief = rt.execute(
+    "select count(*) from agent_memory where bot='market-chief' and kind='daily-briefing'"
+).fetchone()[0]
+assert brief >= 1, brief
+print("shadow smoke ok", shadow)
 PY

@@ -62,7 +62,8 @@ $env:PYTHONPATH = @(
     (Join-Path $Root "plugins\dsh-quant-gateway\src"),
     (Join-Path $Root "plugins\dsh-trade-approval\src"),
     (Join-Path $Root "plugins\dsh-crypto-agent\src"),
-    (Join-Path $Root "plugins\dsh-a-stock-agent\src")
+    (Join-Path $Root "plugins\dsh-a-stock-agent\src"),
+    (Join-Path $Root "plugins\dsh-market-chief\src")
 ) -join ";"
 
 Write-Host "starting read-only gateway on :8001 (snapshot + READ_ONLY=1)"
@@ -74,6 +75,7 @@ try {
     Write-Host "gateway pid=$($gw.Id) projection pid=$($proj.Id)"
     Write-Host "run bots: python scripts/run_crypto_bot.py --mode shadow"
     Write-Host "          python scripts/run_a_stock_bot.py --mode shadow"
+    Write-Host "          python scripts/run_dsh.py --with-astock  # Chief + 两 Bot"
     $every = if ($env:DSH_SNAPSHOT_EXPORT_EVERY_SEC) { [int]$env:DSH_SNAPSHOT_EXPORT_EVERY_SEC } else { 15 }
     while ($true) {
         Start-Sleep -Seconds $every

@@ -85,9 +85,15 @@ class SnapshotAdapter(MarketAdapter):
         except ValueError:
             return None
 
+    def _age_seconds(self, value: datetime | None, now: datetime) -> int | None:
+        if value is None:
+            return None
+        return max(0, int((now - value).total_seconds()))
+
     def get_health(self) -> HealthStatus:
         snap = self._load()
         raw = snap.get("health") or {}
+        now = _now()
         ticker_url = os.environ.get("QUANT_GATEWAY_PUBLIC_TICKER_URL", "").strip()
         data_fresh = bool(raw.get("data_fresh", snap.get("data_fresh", True)))
         detail = (
@@ -95,6 +101,20 @@ class SnapshotAdapter(MarketAdapter):
             or snap.get("detail")
             or f"snapshot {self._path.name}"
         )
+        exported = self._parse_time(snap.get("exported_at")) or self._parse_time(raw.get("as_of"))
+        observed = self._parse_time(snap.get("source_observed_at"))
+        export_age = self._age_seconds(exported, now)
+        snapshot_age = self._age_seconds(observed, now)
+        try:
+            stale_after = int(os.environ.get("DSH_SNAPSHOT_STALE_SECONDS", "90"))
+        except ValueError:
+            stale_after = 90
+        session = str(raw.get("market_session") or "").upper()
+        export_stopped = export_age is not None and export_age > stale_after
+        source_stopped = snapshot_age is not None and snapshot_age > stale_after
+        if export_stopped or (session != "CLOSED" and source_stopped):
+            data_fresh = False
+            detail = f"{detail}; snapshot_stale"
         if ticker_url:
             symbols = [p.get("symbol") for p in (snap.get("positions") or []) if p.get("symbol")]
             prices = [fetch_public_price(str(s)) for s in symbols[:3]]
@@ -103,12 +123,7 @@ class SnapshotAdapter(MarketAdapter):
                 detail = f"{detail}; public ticker unreachable"
             elif any(prices):
                 detail = f"{detail}; public ticker overlaid"
-        as_of = (
-            self._parse_time(snap.get("exported_at"))
-            or self._parse_time(raw.get("as_of"))
-            or _now()
-        )
-        observed = self._parse_time(snap.get("source_observed_at"))
+        as_of = exported or now
         return HealthStatus(
             market=self.market,
             system_ok=bool(raw.get("system_ok", True)),
@@ -121,6 +136,9 @@ class SnapshotAdapter(MarketAdapter):
             source_system=snap.get("source_system") or raw.get("source_system"),
             source_mode=snap.get("source_mode") or raw.get("source_mode"),
             source_observed_at=observed,
+            exported_at=exported,
+            snapshot_age_seconds=snapshot_age,
+            export_age_seconds=export_age,
             snapshot_id=snap.get("snapshot_id"),
             market_session=raw.get("market_session"),
         )
@@ -198,9 +216,23 @@ class SnapshotAdapter(MarketAdapter):
                     generated_at=datetime.fromisoformat(str(generated).replace("Z", "+00:00")),
                     valid_until=datetime.fromisoformat(str(valid).replace("Z", "+00:00")),
                     data_snapshot_id=str(item.get("data_snapshot_id") or self._path.name),
+                    evidence_refs=item.get("evidence_refs"),
+                    quantity=None if item.get("quantity") in (None, "") else str(item.get("quantity")),
+                    entry_price=(
+                        None if item.get("entry_price") in (None, "") else str(item.get("entry_price"))
+                    ),
+                    source_action=item.get("source_action"),
+                    why_source=item.get("why_source"),
                 )
             )
         return rows
+
+    def get_watch(self) -> dict:
+        snap = self._load()
+        return {
+            "screen_results": list(snap.get("screen_results") or []),
+            "rejected_candidates": list(snap.get("rejected_candidates") or []),
+        }
 
     def preview_order(self, intent) -> OrderPreview:
         from dsh_contracts import OrderIntent

@@ -10,6 +10,10 @@ primary_tools:
   - query_order_status
   - query_accounts
   - submit_order
+  - intelligence_ingest
+  - impact_assessment
+  - shadow_recording
+  - strategy_audit
 prohibited:
   - direct_order
   - withdrawal

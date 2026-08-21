@@ -35,6 +35,16 @@ def get_signals(market: Market):
     return get_adapter(market).get_signals()
 
 
+@router.get("/markets/{market}/watch")
+def get_watch(market: Market):
+    """筛选结果与被源系统挡掉的候选。不是正式信号，不能据此下单。"""
+    adapter = get_adapter(market)
+    getter = getattr(adapter, "get_watch", None)
+    if getter is None:
+        return {"screen_results": [], "rejected_candidates": []}
+    return getter()
+
+
 @router.post("/markets/{market}/orders/preview")
 def preview_order(market: Market, intent: dict):
     try:

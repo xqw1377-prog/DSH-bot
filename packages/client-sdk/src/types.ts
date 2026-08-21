@@ -95,6 +95,138 @@ export interface Signal {
   generated_at: string;
   valid_until: string;
   data_snapshot_id: string;
+  evidence_refs?: string[] | null;
+  quantity?: string | null;
+  entry_price?: string | null;
+  source_action?: string | null;
+  why_source?: string[] | null;
+}
+
+export type ShadowAction = "BUY" | "SELL" | "HOLD" | "ABANDON";
+
+export interface ShadowDecision {
+  task_id: string;
+  bot: string;
+  signal_id?: string | null;
+  market?: Market | string | null;
+  symbol?: string | null;
+  side?: OrderSide | string | null;
+  status: string;
+  action?: ShadowAction | string;
+  quantity?: string | null;
+  suggested_price?: string | null;
+  price_low?: string | null;
+  price_high?: string | null;
+  strategy_version?: string | null;
+  strength?: number | null;
+  position_after?: string | null;
+  worst_case_loss?: string | null;
+  primary_risks?: string[];
+  why?: string | null;
+  why_not?: string | null;
+  skip_reason?: string | null;
+  valid_until?: string | null;
+  evidence_refs?: string[];
+  simulation_only?: boolean;
+  disclaimer?: string;
+  outcome_price?: string | null;
+  outcome_at?: string | null;
+  simulated_pnl?: string | null;
+  updated_at?: string;
+}
+
+export type TodayStory = {
+  market: string;
+  title: string;
+  points: string[];
+};
+
+export interface TodayBoard {
+  headline: string;
+  stories: TodayStory[];
+  focus: ShadowDecision[];
+  abandons: ShadowDecision[];
+  watching: Array<Record<string, unknown>>;
+  screens: Array<Record<string, unknown>>;
+  attention?: Array<Record<string, unknown>>;
+  counts: Record<string, number>;
+  disclaimer: string;
+}
+
+export type QualitySuggestion = {
+  suggestion_id: string;
+  title: string;
+  reason: string;
+  evidence: string[];
+  stage: "SUGGESTION";
+  next_stage: "REPLAY";
+  can_apply: false;
+  pipeline: string;
+};
+
+export interface IntelligenceReport {
+  as_of?: string | null;
+  mode: "SHADOW";
+  disclaimer: string;
+  documents: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  coverage?: Record<string, boolean>;
+}
+
+export interface IntelligenceItem {
+  item_id: string;
+  bot: string;
+  market: string;
+  source_id: string;
+  symbol?: string | null;
+  title: string;
+  source_url?: string | null;
+  published_at?: string | null;
+  observed_at: string;
+  authority?: string | null;
+  direction?: string | null;
+  horizon?: string | null;
+  importance?: number | null;
+  confidence?: number | null;
+  action?: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface AuditReportRecord {
+  report_id: string;
+  bot: string;
+  market: string;
+  report_kind: string;
+  period_key: string;
+  created_at: string;
+  payload: Record<string, unknown>;
+}
+
+export interface TradeQualityReport {
+  as_of?: string | null;
+  disclaimer: string;
+  pipeline: string[];
+  coverage: Record<string, boolean>;
+  score: {
+    overall: number | null;
+    dimensions: Record<string, { score: number | null; available: boolean; note?: string }>;
+  };
+  counts: Record<string, number>;
+  worst: Array<Record<string, unknown>>;
+  best: Array<Record<string, unknown>>;
+  exit_notes: string[];
+  size_notes: string[];
+  suggestions: QualitySuggestion[];
+}
+
+export interface ChiefBriefing {
+  as_of?: string | null;
+  focus: ShadowDecision[];
+  risks: ShadowDecision[];
+  abandons: ShadowDecision[];
+  ranked?: ShadowDecision[];
+  counts: Record<string, number>;
+  text?: string;
 }
 
 export interface RiskSnapshot {

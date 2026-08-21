@@ -67,6 +67,7 @@ def map_ashare_payloads(
     source_system: str,
     source_mode: str,
     now: datetime | None = None,
+    signals: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     observed = require_utc_iso(wallet.get("updated_at") or utc_now(), field="updated_at")
     exported = utc_now().isoformat()
@@ -125,7 +126,7 @@ def map_ashare_payloads(
         ],
         "positions": positions,
         "orders": [],
-        "signals": [],
+        "signals": list(signals or []),
         "screen_results": screen_results,
         "fills": _map_fills(wallet.get("recent_trades") or [], account_id),
     }

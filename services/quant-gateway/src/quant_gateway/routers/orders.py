@@ -26,7 +26,13 @@ from quant_gateway.approval_store import (
     compute_intent_digest,
     get_approval,
 )
-from quant_gateway.auth import Principal, require_write
+from quant_gateway.auth import (
+    Principal,
+    require_cancel_service,
+    require_market_bot_service,
+    require_market_runtime_service,
+    require_write,
+)
 from quant_gateway.errors import structured_error
 
 router = APIRouter(dependencies=[Depends(require_write)])
@@ -167,7 +173,6 @@ def _raise_claim_failure(status: ClaimStatus, message: str) -> None:
         message=message,
     )
 
-
 def register_risk_snapshot(snapshot: RiskSnapshot) -> None:
     """注册风险快照（持久化，多 worker 可见）。生产由 risk-policy 写入。"""
     storage.save_risk_snapshot(
@@ -189,6 +194,7 @@ def _account_equity(adapter, account_id: str):
 @router.post("/markets/{market}/risk-snapshots", status_code=201)
 def register_risk_snapshot_api(market: Market, snapshot: dict,
                                principal: Principal = Depends(require_write)):
+    require_market_bot_service(principal, market)
     """注册风险快照。快照来源必须可信（如订单预览的计算结果），
     提交订单时按 risk_snapshot_id 查验，查不到即失败关闭。"""
     from pydantic import ValidationError as VE
@@ -208,6 +214,7 @@ def register_risk_snapshot_api(market: Market, snapshot: dict,
 @router.post("/markets/{market}/orders")
 def request_order(market: Market, intent: dict,
                   principal: Principal = Depends(require_write)):
+    require_market_runtime_service(principal, market)
     # 1. 契约校验：拒绝模糊或不完整的订单意图
     try:
         order_intent = OrderIntent.model_validate(intent)
@@ -288,8 +295,10 @@ def request_order(market: Market, intent: dict,
             recovered_id = recovered["order_id"]
             storage.finalize_idempotency_key(idempotency_key, recovered_id)
             audit.record(
-                "order.submission_recovered", principal.name, market.value,
-                recovered_id,
+                "order.submission_recovered",
+                service_principal=principal.name,
+                market=market.value,
+                subject_id=recovered_id,
                 detail=f"intent={idempotency_key} recovered from venue",
             )
             return {"order_id": recovered_id, "status": "SUBMITTED",
@@ -370,20 +379,26 @@ def request_order(market: Market, intent: dict,
     if check.get("kill_switch") or check.get("severity") == "CRITICAL":
         try:
             audit.record(
-                "kill_switch.requested", principal.name, market.value,
-                order_intent.account_id,
+                "kill_switch.requested",
+                service_principal=principal.name,
+                market=market.value,
+                subject_id=order_intent.account_id,
                 detail=f"risk-policy CRITICAL {check.get('limits_hit')}",
             )
             adapter.emergency_stop(account_id=order_intent.account_id)
             audit.record(
-                "kill_switch.succeeded", principal.name, market.value,
-                order_intent.account_id,
+                "kill_switch.succeeded",
+                service_principal=principal.name,
+                market=market.value,
+                subject_id=order_intent.account_id,
                 detail="emergency_stop engaged after CRITICAL risk check",
             )
         except Exception as exc:
             audit.record(
-                "kill_switch.failed", principal.name, market.value,
-                order_intent.account_id,
+                "kill_switch.failed",
+                service_principal=principal.name,
+                market=market.value,
+                subject_id=order_intent.account_id,
                 detail=str(exc),
             )
     if not check.get("passed"):
@@ -461,7 +476,10 @@ def request_order(market: Market, intent: dict,
             message=str(exc),
         ) from exc
     audit.record(
-        "order.submitted", principal.name, market.value, order_id,
+        "order.submitted",
+        service_principal=principal.name,
+        market=market.value,
+        subject_id=order_id,
         detail=f"intent={order_intent.idempotency_key} "
                f"approval={order_intent.approval_id} "
                f"{order_intent.side} {order_intent.symbol} {order_intent.quantity}",
@@ -472,6 +490,12 @@ def request_order(market: Market, intent: dict,
 @router.post("/markets/{market}/orders/{order_id}/cancel")
 def cancel_order(market: Market, order_id: str,
                  principal: Principal = Depends(require_write)):
+    require_cancel_service(principal, market)
     result = get_adapter(market).cancel_order(order_id)
-    audit.record("order.cancelled", principal.name, market.value, order_id)
+    audit.record(
+        "order.cancelled",
+        service_principal=principal.name,
+        market=market.value,
+        subject_id=order_id,
+    )
     return result

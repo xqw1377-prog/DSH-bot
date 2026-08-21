@@ -100,7 +100,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS audit_log (
             audit_id    TEXT PRIMARY KEY,
             occurred_at TEXT NOT NULL,
-            actor       TEXT NOT NULL,
+            service_principal TEXT,
+            actor_principal   TEXT,
+            actor       TEXT,
             action      TEXT NOT NULL,
             market      TEXT,
             subject_id  TEXT,
@@ -138,6 +140,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE idempotency_keys ADD COLUMN updated_at TEXT "
             "NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+        )
+    audit_cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    added_service_principal = False
+    if "service_principal" not in audit_cols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN service_principal TEXT")
+        added_service_principal = True
+    if "actor_principal" not in audit_cols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN actor_principal TEXT")
+    if added_service_principal and "actor" in audit_cols:
+        conn.execute(
+            "UPDATE audit_log SET service_principal = COALESCE(service_principal, actor) "
+            "WHERE service_principal IS NULL"
         )
     conn.commit()
 
@@ -313,6 +327,7 @@ def get_order_id_for_key(key: str) -> str | None:
 
 def release_consumed_approval(conn: sqlite3.Connection, idempotency_key: str) -> None:
     """把已消费的审批释放回 APPROVED（幂等键失败后允许按新单重试）。
+
     必须与幂等键 FAILED 标记在同一事务内调用（见 mark_idempotency_failed），
     保证「键释放 + 审批回滚」原子。
     """
@@ -341,6 +356,7 @@ def release_consumed_approval(conn: sqlite3.Connection, idempotency_key: str) ->
 
 def finalize_consumed_approval(conn: sqlite3.Connection, idempotency_key: str, order_id: str) -> None:
     """消费完成：审批进入 CONSUMED 并回填权威订单 ID。
+
     必须与幂等键 COMPLETED 标记在同一事务内调用（见 finalize_idempotency_key）。
     """
     row = conn.execute(

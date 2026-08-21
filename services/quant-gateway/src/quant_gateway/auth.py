@@ -1,14 +1,13 @@
 """Quant Gateway API Key 鉴权。
 
 配置（环境变量 QUANT_GATEWAY_API_KEYS），分号分隔，每项 `key:scope1,scope2`：
-    QUANT_GATEWAY_API_KEYS="chief-key:read,write;audit-key:read"
+    QUANT_GATEWAY_API_KEYS="bff-key/dsh-bff:read,write;audit-key/auditor:read"
 
 - read：只读接口（行情、持仓、账户、信号、订单状态、审批列表）
 - write：资金/状态变更接口（下单、撤单、审批决定、策略控制、审批创建）
 
-未配置任何 key 时为开发开放模式（全部放行），便于本地联调；
-生产必须配置。鉴权开启时审批 decided_by 由 Gateway 覆盖为 principal.name，
-客户端提交的 decided_by 无效（见 routers/approvals.py）。
+除 scope 外，资金写路径还要校验“是哪类服务在调用”与“是否携带可信的人类 actor”。
+未配置任何 key 时为开发开放模式（全部放行），便于本地联调；生产必须配置。
 """
 
 import os
@@ -22,6 +21,108 @@ class Principal:
     api_key: str
     name: str
     scopes: frozenset[str]
+
+
+def _principal_names(env_key: str, defaults: tuple[str, ...]) -> frozenset[str]:
+    raw = os.environ.get(env_key, "")
+    if not raw.strip():
+        return frozenset(defaults)
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _market_value(market) -> str:
+    return getattr(market, "value", str(market))
+
+
+def _service_check_enabled(principal: Principal) -> bool:
+    return auth_enabled() and bool(principal.api_key)
+
+
+def _require_named_service(
+    principal: Principal,
+    *,
+    allowed: frozenset[str],
+    action: str,
+) -> None:
+    if not _service_check_enabled(principal):
+        return
+    if principal.name not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"service '{principal.name}' is not allowed to {action}; "
+                f"allowed: {allowed_text}"
+            ),
+        )
+
+
+def require_bff_service(principal: Principal) -> None:
+    _require_named_service(
+        principal,
+        allowed=_principal_names("QUANT_GATEWAY_BFF_PRINCIPALS", ("dsh-bff",)),
+        action="call BFF-only write endpoints",
+    )
+
+
+def require_market_bot_service(principal: Principal, market) -> None:
+    market_value = _market_value(market)
+    defaults = {
+        "CRYPTO": ("crypto-bot",),
+        "A_SHARE": ("a-stock-bot",),
+    }
+    env_key = f"QUANT_GATEWAY_{market_value}_BOT_PRINCIPALS"
+    _require_named_service(
+        principal,
+        allowed=_principal_names(env_key, defaults.get(market_value, tuple())),
+        action=f"create {market_value} approvals",
+    )
+
+
+def require_market_runtime_service(principal: Principal, market) -> None:
+    market_value = _market_value(market)
+    defaults = {
+        "CRYPTO": ("crypto-runtime",),
+        "A_SHARE": ("a-share-runtime",),
+    }
+    env_key = f"QUANT_GATEWAY_{market_value}_RUNTIME_PRINCIPALS"
+    _require_named_service(
+        principal,
+        allowed=_principal_names(env_key, defaults.get(market_value, tuple())),
+        action=f"submit {market_value} orders",
+    )
+
+
+def require_cancel_service(principal: Principal, market) -> None:
+    market_value = _market_value(market)
+    defaults = {
+        "CRYPTO": ("crypto-bot",),
+        "A_SHARE": ("a-stock-bot",),
+    }
+    bot_names = _principal_names(
+        f"QUANT_GATEWAY_{market_value}_BOT_PRINCIPALS",
+        defaults.get(market_value, tuple()),
+    )
+    bff_names = _principal_names("QUANT_GATEWAY_BFF_PRINCIPALS", ("dsh-bff",))
+    _require_named_service(
+        principal,
+        allowed=frozenset(set(bot_names) | set(bff_names)),
+        action=f"cancel {market_value} orders",
+    )
+
+
+def require_actor_principal(
+    x_actor_id: str | None = Header(default=None, alias="X-Actor-Id"),
+) -> str:
+    actor = (x_actor_id or "").strip()
+    if not auth_enabled():
+        return actor or "development-actor"
+    if not actor:
+        raise HTTPException(
+            status_code=403,
+            detail="trusted actor principal required for human write actions",
+        )
+    return actor
 
 
 def _load_principals() -> dict[str, Principal]:

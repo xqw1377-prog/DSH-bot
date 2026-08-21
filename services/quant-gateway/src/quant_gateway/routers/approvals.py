@@ -11,7 +11,14 @@ from pydantic import BaseModel, Field
 
 from dsh_contracts import ApprovalStatus, Market
 from quant_gateway import approval_store, audit
-from quant_gateway.auth import Principal, auth_enabled, require_read, require_write
+from quant_gateway.auth import (
+    Principal,
+    require_actor_principal,
+    require_bff_service,
+    require_market_bot_service,
+    require_read,
+    require_write,
+)
 
 router = APIRouter()
 
@@ -27,7 +34,7 @@ class ApprovalCreate(BaseModel):
 
 class ApprovalDecision(BaseModel):
     decision: ApprovalStatus
-    decided_by: str
+    decided_by: str | None = None
 
 
 _ORDER_BINDING_FIELDS = frozenset({
@@ -53,6 +60,7 @@ def list_approvals(
 @router.post("/approvals", status_code=201)
 def create_approval(req: ApprovalCreate,
                     principal: Principal = Depends(require_write)):
+    require_market_bot_service(principal, req.market)
     if req.subject_type == "order":
         if not req.binding:
             raise HTTPException(
@@ -76,10 +84,14 @@ def create_approval(req: ApprovalCreate,
         evidence_refs=req.evidence_refs,
         binding=req.binding,
     )
-    audit.record("approval.requested", f"bot:{req.requested_by_bot}",
-                 market=req.market.value, subject_id=req.subject_id,
-                 detail=f"approval_id={approval.approval_id} "
-                        f"subject_type={req.subject_type}")
+    audit.record(
+        "approval.requested",
+        service_principal=principal.name,
+        actor_principal=f"bot:{req.requested_by_bot}",
+        market=req.market.value,
+        subject_id=req.subject_id,
+        detail=f"approval_id={approval.approval_id} subject_type={req.subject_type}",
+    )
     return approval.model_dump(mode="json")
 
 
@@ -96,8 +108,10 @@ def get_approval(
 
 @router.post("/approvals/{approval_id}/decide")
 def decide(approval_id: str, req: ApprovalDecision,
-           principal: Principal = Depends(require_write)):
-    decided_by = principal.name if auth_enabled() else req.decided_by
+           principal: Principal = Depends(require_write),
+           actor_principal: str = Depends(require_actor_principal)):
+    require_bff_service(principal)
+    decided_by = actor_principal if principal.api_key else (req.decided_by or actor_principal)
     try:
         approval = approval_store.decide_approval(
             approval_id, req.decision, decided_by
@@ -106,8 +120,12 @@ def decide(approval_id: str, req: ApprovalDecision,
         raise HTTPException(status_code=404, detail="approval not found") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    audit.record(f"approval.{req.decision.value.lower()}",
-                 actor=f"human:{decided_by}", market=approval.market.value,
-                 subject_id=approval_id,
-                 detail=f"via key '{principal.name}'")
+    audit.record(
+        f"approval.{req.decision.value.lower()}",
+        service_principal=principal.name,
+        actor_principal=decided_by,
+        market=approval.market.value,
+        subject_id=approval_id,
+        detail=f"via key '{principal.name}'",
+    )
     return approval.model_dump(mode="json")

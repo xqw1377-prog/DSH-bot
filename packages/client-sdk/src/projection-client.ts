@@ -2,12 +2,19 @@ import type {
   AccountSummary,
   Approval,
   ApprovalStatus,
+  ChiefBriefing,
   Experiment,
   HealthStatus,
   Market,
   Position,
+  ShadowDecision,
   Signal,
   StrategyCandidate,
+  TodayBoard,
+  IntelligenceReport,
+  IntelligenceItem,
+  AuditReportRecord,
+  TradeQualityReport,
 } from "./types.js";
 
 export type ProjectionClientOptions = {
@@ -111,6 +118,45 @@ export class ProjectionClient {
   getBotsOverview(): Promise<BotsOverview> {
     return this.get("/v1/bots/overview");
   }
+
+  getShadowDecisions(bot?: string): Promise<ShadowDecision[]> {
+    const query = bot ? `?bot=${encodeURIComponent(bot)}` : "";
+    return this.get(`/v1/shadow-decisions${query}`);
+  }
+
+  getChiefBriefing(): Promise<ChiefBriefing> {
+    return this.get("/v1/chief/briefing");
+  }
+
+  getToday(): Promise<TodayBoard> {
+    return this.get("/v1/today");
+  }
+
+  getTradeQuality(): Promise<TradeQualityReport> {
+    return this.get("/v1/trade-quality");
+  }
+
+  getIntelligence(): Promise<IntelligenceReport> {
+    return this.get("/v1/intelligence");
+  }
+
+  getIntelligenceFeed(bot?: string, market?: Market, limit?: number): Promise<IntelligenceItem[]> {
+    const params = new URLSearchParams();
+    if (bot) params.set("bot", bot);
+    if (market) params.set("market", market);
+    if (limit) params.set("limit", String(limit));
+    const query = params.toString();
+    return this.get(`/v1/intelligence/feed${query ? `?${query}` : ""}`);
+  }
+
+  getAuditReports(bot?: string, reportKind?: string, limit?: number): Promise<AuditReportRecord[]> {
+    const params = new URLSearchParams();
+    if (bot) params.set("bot", bot);
+    if (reportKind) params.set("report_kind", reportKind);
+    if (limit) params.set("limit", String(limit));
+    const query = params.toString();
+    return this.get(`/v1/audit/reports${query ? `?${query}` : ""}`);
+  }
 }
 
 export type BotRuntime = "ONLINE" | "DEGRADED" | "OFFLINE";
@@ -157,6 +203,9 @@ export type BotOverview = {
   source_system?: string | null;
   source_mode?: string | null;
   source_observed_at?: string | null;
+  exported_at?: string | null;
+  snapshot_age_seconds?: number | null;
+  export_age_seconds?: number | null;
   connection: "CONNECTED" | "DISCONNECTED";
   counts: {
     pending_approvals: number;

@@ -89,7 +89,16 @@ def test_audit_trail_recorded(tmp_path, monkeypatch):
     assert "approval.approved" in actions
 
 
-AUTH_ENV = {"QUANT_GATEWAY_API_KEYS": "chief-secret/alice:read,write;viewer-secret/bob:read"}
+AUTH_ENV = {
+    "QUANT_GATEWAY_API_KEYS": (
+        "bff-secret/dsh-bff:read,write;"
+        "viewer-secret/bob:read;"
+        "crypto-bot-secret/crypto-bot:read,write;"
+        "a-share-bot-secret/a-stock-bot:read,write;"
+        "crypto-runtime-secret/crypto-runtime:read,write;"
+        "a-share-runtime-secret/a-share-runtime:read,write"
+    )
+}
 
 
 def test_auth_rejects_missing_or_invalid_key(monkeypatch):
@@ -115,17 +124,20 @@ def test_auth_scope_enforced(monkeypatch):
         "requested_by_bot": "crypto-bot",
         "subject_type": "risk_budget",
         "subject_id": "intent-1",
-    }, headers={"X-API-Key": "chief-secret"}).json()
+    }, headers={"X-API-Key": "crypto-bot-secret"}).json()
     assert client.post(
         f"/v1/approvals/{created['approval_id']}/decide",
         json={"decision": "APPROVED", "decided_by": "bob"},
         headers={"X-API-Key": "viewer-secret"},
     ).status_code == 403
-    # write key 可以决定
+    # 只有 BFF write key + actor header 可以决定
     assert client.post(
         f"/v1/approvals/{created['approval_id']}/decide",
-        json={"decision": "APPROVED", "decided_by": "alice"},
-        headers={"X-API-Key": "chief-secret"},
+        json={"decision": "APPROVED"},
+        headers={
+            "X-API-Key": "bff-secret",
+            "X-Actor-Id": "https://iap.test user-1",
+        },
     ).status_code == 200
 
 
@@ -137,14 +149,17 @@ def test_decided_by_overwritten_by_principal(monkeypatch):
         "requested_by_bot": "crypto-bot",
         "subject_type": "risk_budget",
         "subject_id": "intent-2",
-    }, headers={"X-API-Key": "chief-secret"}).json()
+    }, headers={"X-API-Key": "crypto-bot-secret"}).json()
     decided = client.post(
         f"/v1/approvals/{created['approval_id']}/decide",
         json={"decision": "APPROVED", "decided_by": "forged-human"},
-        headers={"X-API-Key": "chief-secret"},
+        headers={
+            "X-API-Key": "bff-secret",
+            "X-Actor-Id": "https://iap.test approver-1",
+        },
     )
     assert decided.status_code == 200
-    assert decided.json()["decided_by"] == "alice"
+    assert decided.json()["decided_by"] == "https://iap.test approver-1"
     assert client.get(
         "/v1/approvals",
     ).status_code == 401

@@ -44,10 +44,9 @@ async function decideUpstream(
   const body = (await request.json()) as { decision?: string };
   const upstream = await fetch(`${gatewayUrl()}/v1/approvals/${id}/decide`, {
     method: "POST",
-    headers: gatewayHeaders(),
+    headers: gatewayHeaders({ "X-Actor-Id": actor }),
     body: JSON.stringify({
       decision: body.decision,
-      decided_by: actor,
     }),
   });
   const text = await upstream.text();

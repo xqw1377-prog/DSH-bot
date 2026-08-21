@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 for sub in (
     "packages/domain-contracts/src",
     "packages/dsh-runtime/src",
+    "services/intelligence-ingest/src",
     "plugins/dsh-quant-gateway/src",
     "plugins/dsh-trade-approval/src",
     "plugins/dsh-crypto-agent/src",
@@ -38,6 +39,18 @@ from dsh_gateway_client import GatewayClient, GatewayError
 from dsh_market_chief import MarketChiefAgent
 from dsh_runtime import BotSession, load_profile, run_once
 from dsh_trade_approval import ApprovalWorkflow
+
+
+def run_autonomous_once(*, derived: bool = False) -> dict:
+    from dsh_runtime.autonomous import run_autonomous_cycle
+    from intelligence_ingest.pipeline import ingest_once
+
+    if os.environ.get("DSH_CRYPTO_MODE") == "live" or os.environ.get("DSH_A_SHARE_MODE") == "live":
+        raise SystemExit("autonomous layer refuses live")
+    return run_autonomous_cycle(
+        profiles_root=ROOT / "profiles",
+        ingest=lambda: ingest_once(include_derived=derived),
+    )
 
 
 def _load_dotenv(path: Path) -> None:
@@ -79,8 +92,13 @@ def build_agents(
     approvals = ApprovalWorkflow(gateway_base_url=gateway_url, api_key=api_key)
     agents = [
         (MarketChiefAgent(gateway=gateway), "market-chief"),
-        (CryptoAgent(gateway=gateway, approvals=approvals,
-                     account_id=account, min_strength=min_strength),
+        (CryptoAgent(
+            gateway=gateway,
+            approvals=approvals,
+            account_id=account,
+            min_strength=min_strength,
+            mode=os.environ.get("DSH_CRYPTO_MODE", "paper"),
+        ),
          "crypto-bot"),
     ]
     if with_astock:
@@ -95,6 +113,7 @@ def build_agents(
                 approvals=approvals,
                 account_id=astock_account,
                 min_strength=min_strength,
+                mode=os.environ.get("DSH_A_SHARE_MODE", "paper"),
             ),
             "a-stock-bot",
         ))
@@ -120,6 +139,22 @@ def main() -> int:
         os.environ.get("DSH_CRYPTO_MIN_STRENGTH", "0.6")
     ))
     parser.add_argument("--db", default=None, help="记忆/事件/任务 SQLite 路径")
+    parser.add_argument(
+        "--with-autonomous",
+        action="store_true",
+        help="同时运行主动智能层（独立周期，仍然只到 Shadow）",
+    )
+    parser.add_argument(
+        "--autonomous-every",
+        type=float,
+        default=float(os.environ.get("DSH_AUTONOMOUS_EVERY", "300")),
+        help="主动智能层周期秒，默认 300",
+    )
+    parser.add_argument(
+        "--intel-derived",
+        action="store_true",
+        help="主动智能层同时拉 GitHub Release / 项目 RSS",
+    )
     parser.add_argument(
         "--with-astock", action="store_true",
         help="启用 A 股 Bot（候选实现，复用同一执行核）",
@@ -158,8 +193,19 @@ def main() -> int:
 
     print(f"[dsh] 启动 {len(runners)} 个 Bot：{[a.name for _, a in runners]}，"
           f"account={args.account} 每 {args.every}s 一轮，Ctrl-C 停止")
+    next_autonomous = 0.0
     try:
         while True:
+            now = time.time()
+            if args.with_autonomous and now >= next_autonomous:
+                summary = run_autonomous_once(derived=args.intel_derived)
+                print(
+                    "[dsh] autonomous "
+                    f"crypto_items={summary.get('crypto_items')} "
+                    f"ashare_items={summary.get('ashare_items')} "
+                    f"mode={summary.get('mode')}"
+                )
+                next_autonomous = now + max(args.autonomous_every, 60.0)
             for session, agent in runners:
                 run_once(session, agent)
             time.sleep(args.every)

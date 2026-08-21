@@ -32,6 +32,11 @@ def map_crypto_state(
     source_system: str,
     source_mode: str,
     stale_after_seconds: int,
+    signals: list[dict[str, Any]] | None = None,
+    rejected_candidates: list[dict[str, Any]] | None = None,
+    fills: list[dict[str, Any]] | None = None,
+    closed_trades: list[dict[str, Any]] | None = None,
+    equity_curve: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     observed = require_utc_iso(state.get("last_update"), field="last_update")
     exported = utc_now().isoformat()
@@ -98,9 +103,14 @@ def map_crypto_state(
         ],
         "positions": positions,
         "orders": [],
-        "signals": [],
+        "signals": list(signals or []),
+        "rejected_candidates": list(rejected_candidates or []),
         "screen_results": [],
-        "fills": [],
+        "fills": list(fills or []),
+        "closed_trades": list(closed_trades or []),
+        "equity_curve": list(equity_curve or []),
+        "fee_rate": state.get("fee_rate"),
+        "slippage": state.get("slippage"),
     }
 
 

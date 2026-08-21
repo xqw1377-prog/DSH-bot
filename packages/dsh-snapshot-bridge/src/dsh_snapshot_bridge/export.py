@@ -8,8 +8,20 @@ from pathlib import Path
 from typing import Any
 
 from dsh_snapshot_bridge.ashare import AShareSourceError, fetch_json, map_ashare_payloads
+from dsh_snapshot_bridge.ashare_signals import map_policy_decisions
 from dsh_snapshot_bridge.atomic import atomic_write_json
 from dsh_snapshot_bridge.crypto import load_crypto_state, map_crypto_state
+from dsh_snapshot_bridge.crypto_signals import (
+    default_signals_path,
+    load_jsonl_tail,
+    map_crypto_rejects,
+    map_crypto_signals,
+)
+from dsh_snapshot_bridge.crypto_trades import (
+    map_crypto_closed_trades,
+    map_crypto_equity_curve,
+    map_crypto_fills,
+)
 from dsh_snapshot_bridge.schema import SCHEMA_VERSION, validate_snapshot
 from dsh_snapshot_bridge.timeutil import utc_now
 
@@ -18,6 +30,15 @@ class ExportError(RuntimeError):
     def __init__(self, error_type: str, message: str):
         super().__init__(message)
         self.error_type = error_type
+
+
+def _derive_cockpit_url(wallet_url: str) -> str:
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(wallet_url)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urlunparse((parsed.scheme, parsed.netloc, "/api/cockpit", "", "", ""))
 
 
 def _require_env(name: str) -> str:
@@ -161,13 +182,40 @@ def export_crypto_snapshot(
     try:
         path = Path(state_path or _require_env("DSH_CRYPTO_STATE_JSON"))
         state = load_crypto_state(path)
+        signals_file = Path(
+            os.environ.get("DSH_CRYPTO_SIGNALS_JSONL") or default_signals_path(path)
+        )
+        draft_id = f"crypto-{utc_now().isoformat()}"
+        rows = load_jsonl_tail(signals_file)
+        trades_file = Path(os.environ.get("DSH_CRYPTO_TRADES_JSONL") or (path.parent / "trades.jsonl"))
+        equity_file = Path(
+            os.environ.get("DSH_CRYPTO_EQUITY_JSONL") or (path.parent / "equity_snapshots.jsonl")
+        )
+        closed_trades = map_crypto_closed_trades(
+            load_jsonl_tail(trades_file, max_lines=4000),
+            account_id=account,
+        )
+        signals = map_crypto_signals(
+            rows,
+            strategy_version=str(
+                state.get("runtime_version") or state.get("param_hash") or "6celue"
+            ),
+            snapshot_id=draft_id,
+        )
         payload = map_crypto_state(
             state,
             account_id=account,
             source_system=system,
             source_mode=mode,
             stale_after_seconds=stale_after,
+            signals=signals,
+            rejected_candidates=map_crypto_rejects(rows),
+            fills=map_crypto_fills(closed_trades),
+            closed_trades=closed_trades,
+            equity_curve=map_crypto_equity_curve(load_jsonl_tail(equity_file, max_lines=2000)),
         )
+        for row in payload["signals"]:
+            row["data_snapshot_id"] = payload["snapshot_id"]
         return _write_validated(dest, payload)
     except Exception as exc:
         error_type = getattr(exc, "error_type", None) or type(exc).__name__
@@ -223,13 +271,28 @@ def export_ashare_snapshot(
     try:
         wallet_payload = fetch_json(wallet, timeout=seconds)
         screen_payload = fetch_json(screen, timeout=seconds)
+        signals: list = []
+        cockpit_url = os.environ.get("DSH_A_SHARE_COCKPIT_URL", "").strip() or _derive_cockpit_url(
+            wallet
+        )
+        if cockpit_url:
+            try:
+                cockpit = fetch_json(cockpit_url, timeout=seconds)
+                signals = map_policy_decisions(
+                    cockpit, snapshot_id=f"ashare-{utc_now().isoformat()}"
+                )
+            except Exception:
+                signals = []
         payload = map_ashare_payloads(
             wallet_payload,
             screen_payload,
             account_id=account,
             source_system=system,
             source_mode=mode,
+            signals=signals,
         )
+        for row in payload["signals"]:
+            row["data_snapshot_id"] = payload["snapshot_id"]
         return _write_validated(dest, payload)
     except Exception as exc:
         error_type = getattr(exc, "error_type", None) or type(exc).__name__

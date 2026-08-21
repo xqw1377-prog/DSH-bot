@@ -39,11 +39,13 @@ async function emergencyStopUpstream(request: Request, actor: string) {
   const market = body.market === "A_SHARE" ? "A_SHARE" : "CRYPTO";
   const params = new URLSearchParams();
   if (body.account_id) params.set("account_id", body.account_id);
-  params.set("actor_id", actor);
   const query = params.toString();
   const upstream = await fetch(
     `${gatewayUrl()}/v1/markets/${market}/emergency-stop${query ? `?${query}` : ""}`,
-    { method: "POST", headers: gatewayHeaders() },
+    {
+      method: "POST",
+      headers: gatewayHeaders({ "X-Actor-Id": actor }),
+    },
   );
   const text = await upstream.text();
   return new NextResponse(text, {

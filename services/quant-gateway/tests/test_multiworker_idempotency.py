@@ -23,8 +23,9 @@ SUBMIT_SCRIPT = """
 import json, sys
 import httpx
 body = json.loads(sys.argv[2])
+headers = {"X-API-Key": sys.argv[3]}
 try:
-    r = httpx.post(sys.argv[1] + "/v1/markets/CRYPTO/orders", json=body, timeout=30)
+    r = httpx.post(sys.argv[1] + "/v1/markets/CRYPTO/orders", json=body, headers=headers, timeout=30)
     print(r.status_code)
 except Exception as e:
     print("ERR", e)
@@ -41,6 +42,11 @@ def multiworker_gateway(tmp_path):
         DSH_ENV="development",
         DSH_LOCAL_PAPER="1",
         PAPER_CRYPTO_ACCOUNT_ID="paper-crypto-001",
+        QUANT_GATEWAY_API_KEYS=(
+            "bff-secret/dsh-bff:read,write;"
+            "crypto-bot-secret/crypto-bot:read,write;"
+            "crypto-runtime-secret/crypto-runtime:read,write"
+        ),
     )
     gw = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "quant_gateway.main:app",
@@ -81,36 +87,58 @@ def multiworker_gateway(tmp_path):
 
 def test_concurrent_processes_submit_exactly_once(multiworker_gateway, tmp_path):
     base = multiworker_gateway
+    bot_headers = {"X-API-Key": "crypto-bot-secret"}
+    bff_headers = {
+        "X-API-Key": "bff-secret",
+        "X-Actor-Id": "https://iap.test approver-1",
+    }
+    runtime_headers = {"X-API-Key": "crypto-runtime-secret"}
 
     # 准备：审批 + 风险快照（经 API，走完整门禁）
-    approval = httpx.post(base + "/v1/approvals", json={
-        "market": "CRYPTO", "requested_by_bot": "crypto-bot",
-        "subject_type": "order", "subject_id": "sig-mw",
-        "binding": {
+    approval = httpx.post(
+        base + "/v1/approvals",
+        json={
             "market": "CRYPTO",
-            "account_id": "paper-crypto-001",
-            "symbol": "BTCUSDT",
-            "side": "BUY",
-            "quantity": "0.01",
-            "strategy_version": "1",
-            "signal_snapshot_id": "sig-mw",
-            "risk_snapshot_id": "rs-mw",
-            "valid_until": "2030-01-01T00:00:00Z",
+            "requested_by_bot": "crypto-bot",
+            "subject_type": "order",
+            "subject_id": "sig-mw",
+            "binding": {
+                "market": "CRYPTO",
+                "account_id": "paper-crypto-001",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "quantity": "0.01",
+                "strategy_version": "1",
+                "signal_snapshot_id": "sig-mw",
+                "risk_snapshot_id": "rs-mw",
+                "valid_until": "2030-01-01T00:00:00Z",
+            },
         },
-    })
+        headers=bot_headers,
+    )
     assert approval.status_code == 201, approval.text
     approval = approval.json()
     httpx.post(
         base + f"/v1/approvals/{approval['approval_id']}/decide",
-        json={"decision": "APPROVED", "decided_by": "alice"},
+        json={"decision": "APPROVED"},
+        headers=bff_headers,
     )
-    httpx.post(base + "/v1/markets/CRYPTO/risk-snapshots", json={
-        "risk_snapshot_id": "rs-mw", "market": "CRYPTO",
-        "account_id": "paper-crypto-001",
-        "position_before": "0", "position_after": "0.01",
-        "risk_budget_delta": "1", "worst_case_loss": "1",
-        "limits_hit": [], "as_of": "2026-01-01T00:00:00Z",
-    })
+    snapshot = httpx.post(
+        base + "/v1/markets/CRYPTO/risk-snapshots",
+        json={
+            "risk_snapshot_id": "rs-mw",
+            "market": "CRYPTO",
+            "account_id": "paper-crypto-001",
+            "position_before": "0",
+            "position_after": "0.01",
+            "risk_budget_delta": "1",
+            "worst_case_loss": "1",
+            "limits_hit": [],
+            "as_of": "2026-01-01T00:00:00Z",
+        },
+        headers=bot_headers,
+    )
+    assert snapshot.status_code == 201, snapshot.text
     body = {
         "idempotency_key": "mw-key-1",
         "market": "CRYPTO", "account_id": "paper-crypto-001",
@@ -127,7 +155,7 @@ def test_concurrent_processes_submit_exactly_once(multiworker_gateway, tmp_path)
     # 8 个并发进程，同一幂等键同一请求体
     procs = [
         subprocess.Popen(
-            [sys.executable, str(script), base, json.dumps(body)],
+            [sys.executable, str(script), base, json.dumps(body), "crypto-runtime-secret"],
             stdout=subprocess.PIPE, text=True,
         )
         for _ in range(8)
@@ -137,6 +165,9 @@ def test_concurrent_processes_submit_exactly_once(multiworker_gateway, tmp_path)
     assert results.count("200") == 1, results
     assert results.count("409") == len(results) - 1, results
 
-    audit = httpx.get(base + "/v1/audit?limit=50").json()
+    audit = httpx.get(
+        base + "/v1/audit?limit=50",
+        headers={"X-API-Key": "bff-secret"},
+    ).json()
     submitted = [e for e in audit if e["action"] == "order.submitted"]
     assert len(submitted) == 1  # venue 只收到一笔

@@ -72,6 +72,28 @@ class IncidentStatus(StrEnum):
     REVIEWED = "REVIEWED"
 
 
+class IntelGrade(StrEnum):
+    """情报分级。第一时间执行不等于看到推文就下单。"""
+
+    OFFICIAL_PREAUTH = "OFFICIAL_PREAUTH"
+    OFFICIAL_UNCLEAR = "OFFICIAL_UNCLEAR"
+    SECONDARY_CONSENSUS = "SECONDARY_CONSENSUS"
+    OBSERVE = "OBSERVE"
+    RISK_REDUCE = "RISK_REDUCE"
+    RISK_INCREASE = "RISK_INCREASE"
+
+
+class ExecutionLane(StrEnum):
+    """决策可进入的执行车道。Live 必须另开门禁。"""
+
+    OBSERVE = "OBSERVE"
+    SHADOW = "SHADOW"
+    ADVICE = "ADVICE"
+    PROTECT = "PROTECT"
+    PAPER = "PAPER"
+    LIVE_BLOCKED = "LIVE_BLOCKED"
+
+
 class TaskStatus(StrEnum):
     """Bot 任务状态机，见 PRD 附录 A.3。"""
 
