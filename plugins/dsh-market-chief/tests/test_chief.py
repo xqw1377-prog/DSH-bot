@@ -86,3 +86,85 @@ def test_chief_alerts_on_degraded_market():
     incidents = session.events.query("incident/opened")
     assert len(incidents) == 1
     assert "A_SHARE" in incidents[0]["payload"]["markets"]
+
+
+def test_chief_writes_daily_briefing():
+    register_adapter(Market.A_SHARE, ChiefFakeAdapter(Market.A_SHARE, healthy=True))
+    register_adapter(Market.CRYPTO, ChiefFakeAdapter(Market.CRYPTO, healthy=True))
+    from dsh_runtime.store import _get
+
+    conn = _get()
+    conn.execute(
+        "INSERT INTO bot_tasks"
+        " (task_id, bot, kind, status, subject_id, payload, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "task-crypto-sig-1",
+            "crypto-bot",
+            "shadow-decision",
+            "SHADOW_RECORDED",
+            "sig-1",
+            '{"market":"CRYPTO","symbol":"BTCUSDT","side":"BUY","shadow_decision":'
+            '{"action":"BUY","strength":0.9,"disclaimer":"仅模拟，不会下单"}}',
+            "2026-08-19T00:00:00+00:00",
+            "2026-08-19T00:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    chief, session = _chief_and_session()
+    run_once(session, chief)
+    briefing = session.events.query("market/chief.briefing")
+    assert briefing
+    assert briefing[0]["payload"]["counts"]["execute"] == 1
+    notes = session.memory.recent(kind="daily-briefing")
+    assert notes
+
+
+def test_chief_briefing_includes_intelligence_and_audits():
+    register_adapter(Market.A_SHARE, ChiefFakeAdapter(Market.A_SHARE, healthy=True))
+    register_adapter(Market.CRYPTO, ChiefFakeAdapter(Market.CRYPTO, healthy=True))
+    from dsh_runtime.store import _get
+
+    conn = _get()
+    conn.execute(
+        "INSERT INTO intelligence_items"
+        " (item_id, bot, market, source_id, symbol, title, observed_at,"
+        " importance, confidence, action, dedupe_key, payload)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "intel-1",
+            "crypto-bot",
+            "CRYPTO",
+            "eth-foundation",
+            "ETHUSDT",
+            "Ethereum 基金会发布路线调整",
+            "2026-08-20T00:00:00+00:00",
+            0.82,
+            0.72,
+            "SELL",
+            "dedupe-1",
+            '{"title":"Ethereum 基金会发布路线调整"}',
+        ),
+    )
+    conn.execute(
+        "INSERT INTO audit_reports"
+        " (report_id, bot, market, report_kind, period_key, created_at, payload)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "report-1",
+            "crypto-bot",
+            "CRYPTO",
+            "intelligence-daily",
+            "2026-08-20",
+            "2026-08-20T00:10:00+00:00",
+            '{"score":{"intelligence_hit_rate":0.75}}',
+        ),
+    )
+    conn.commit()
+    chief, session = _chief_and_session()
+    run_once(session, chief)
+    briefing = session.events.query("market/chief.briefing")[0]["payload"]
+    assert briefing["counts"]["intelligence"] >= 1
+    assert briefing["intelligence"][0]["symbol"] == "ETHUSDT"
+    assert briefing["focus_today"]
+    assert briefing["audits"][0]["bot"] == "crypto-bot"

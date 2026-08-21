@@ -57,6 +57,123 @@ def _connect() -> sqlite3.Connection:
             reconciliation_status TEXT NOT NULL DEFAULT 'PENDING'
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_bot_status ON bot_tasks (bot, status);
+
+        CREATE TABLE IF NOT EXISTS intelligence_items (
+            item_id        TEXT PRIMARY KEY,
+            bot            TEXT NOT NULL,
+            market         TEXT NOT NULL,
+            source_id      TEXT NOT NULL,
+            symbol         TEXT,
+            title          TEXT NOT NULL,
+            source_url     TEXT,
+            published_at   TEXT,
+            observed_at    TEXT NOT NULL,
+            authority      TEXT,
+            direction      TEXT,
+            horizon        TEXT,
+            importance     REAL NOT NULL DEFAULT 0,
+            confidence     REAL NOT NULL DEFAULT 0,
+            action         TEXT,
+            dedupe_key     TEXT NOT NULL,
+            payload        TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_intel_bot_dedupe
+            ON intelligence_items (bot, dedupe_key);
+        CREATE INDEX IF NOT EXISTS idx_intel_bot_observed
+            ON intelligence_items (bot, observed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS audit_reports (
+            report_id      TEXT PRIMARY KEY,
+            bot            TEXT NOT NULL,
+            market         TEXT NOT NULL,
+            report_kind    TEXT NOT NULL,
+            period_key     TEXT NOT NULL,
+            created_at     TEXT NOT NULL,
+            payload        TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_bot_period
+            ON audit_reports (bot, report_kind, period_key);
+        CREATE INDEX IF NOT EXISTS idx_audit_bot_created
+            ON audit_reports (bot, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS decision_ledger (
+            decision_id TEXT PRIMARY KEY,
+            bot TEXT NOT NULL,
+            market TEXT NOT NULL,
+            symbol TEXT,
+            status TEXT NOT NULL,
+            intel_grade TEXT NOT NULL,
+            execution_lane TEXT NOT NULL,
+            event_id TEXT,
+            intelligence_item_id TEXT,
+            signal_id TEXT,
+            strategy_id TEXT,
+            strategy_version TEXT,
+            risk_snapshot_id TEXT,
+            task_id TEXT,
+            approval_id TEXT,
+            order_id TEXT,
+            fill_id TEXT,
+            audit_id TEXT,
+            capital_budget TEXT,
+            max_risk TEXT,
+            requires_approval INTEGER NOT NULL,
+            can_apply INTEGER NOT NULL DEFAULT 0,
+            direction TEXT,
+            confidence TEXT,
+            impact_horizon TEXT,
+            action TEXT,
+            entry_plan TEXT NOT NULL DEFAULT '{}',
+            exit_plan TEXT NOT NULL DEFAULT '{}',
+            evidence_refs TEXT NOT NULL DEFAULT '[]',
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_bot_link
+            ON decision_ledger (bot, ifnull(event_id, ''), ifnull(signal_id, ''), ifnull(action, ''));
+        CREATE INDEX IF NOT EXISTS idx_ledger_bot_updated
+            ON decision_ledger (bot, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS position_episodes (
+            episode_id    TEXT PRIMARY KEY,
+            bot           TEXT NOT NULL,
+            decision_id   TEXT NOT NULL,
+            market        TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            side          TEXT NOT NULL,
+            entry_fill_id TEXT,
+            entry_price   TEXT,
+            entry_at      TEXT,
+            quantity      TEXT NOT NULL DEFAULT '0',
+            exit_fill_id  TEXT,
+            exit_price    TEXT,
+            exit_at       TEXT,
+            exit_reason   TEXT,
+            realized_pnl  TEXT,
+            fees          TEXT NOT NULL DEFAULT '0',
+            status        TEXT NOT NULL DEFAULT 'OPEN',
+            outcomes      TEXT NOT NULL DEFAULT '{}',
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_open
+            ON position_episodes (bot, decision_id, status);
+        CREATE INDEX IF NOT EXISTS idx_episode_bot_updated
+            ON position_episodes (bot, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS optimization_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            bot          TEXT NOT NULL,
+            market       TEXT NOT NULL,
+            stage        TEXT NOT NULL,
+            next_stage   TEXT,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            payload      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_candidate_bot_market
+            ON optimization_candidates (bot, market, updated_at DESC);
         """
     )
     # 迁移：旧库无 reconciliation_status 列时补上
@@ -66,6 +183,9 @@ def _connect() -> sqlite3.Connection:
             "ALTER TABLE bot_tasks ADD COLUMN reconciliation_status TEXT"
             " NOT NULL DEFAULT 'PENDING'"
         )
+    ledger_cols = {r[1] for r in conn.execute("PRAGMA table_info(decision_ledger)").fetchall()}
+    if "approval_id" not in ledger_cols:
+        conn.execute("ALTER TABLE decision_ledger ADD COLUMN approval_id TEXT")
     conn.commit()
     ensure_schema(conn)
     return conn
@@ -165,6 +285,567 @@ class Memory:
             (self.bot, f'%"{tag}"%'),
         ).fetchone()
         return row is not None
+
+
+class IntelligenceStore:
+    """结构化情报账本：来源、影响、建议和跟踪结果。"""
+
+    def __init__(self, bot: str):
+        self.bot = bot
+
+    def upsert(
+        self,
+        *,
+        dedupe_key: str,
+        market: str,
+        source_id: str,
+        title: str,
+        payload: dict,
+        symbol: str | None = None,
+        source_url: str | None = None,
+        published_at: str | None = None,
+        observed_at: str | None = None,
+        authority: str | None = None,
+        direction: str | None = None,
+        horizon: str | None = None,
+        importance: float = 0.0,
+        confidence: float = 0.0,
+        action: str | None = None,
+    ) -> tuple[str, bool]:
+        conn = _get()
+        now = observed_at or datetime.now(UTC).isoformat()
+        existing = conn.execute(
+            "SELECT item_id FROM intelligence_items WHERE bot = ? AND dedupe_key = ?",
+            (self.bot, dedupe_key),
+        ).fetchone()
+        if existing is not None:
+            item_id = existing[0]
+            prior = conn.execute(
+                "SELECT observed_at, payload FROM intelligence_items WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+            prior_payload = json.loads(prior[1]) if prior and prior[1] else {}
+            merged = {**payload}
+            if prior_payload.get("follow_up"):
+                merged["follow_up"] = prior_payload["follow_up"]
+            merged["observed_at"] = prior_payload.get("observed_at") or (prior[0] if prior else now)
+            conn.execute(
+                "UPDATE intelligence_items SET market = ?, source_id = ?, symbol = ?,"
+                " title = ?, source_url = ?, published_at = ?,"
+                " authority = ?, direction = ?, horizon = ?, importance = ?,"
+                " confidence = ?, action = ?, payload = ?"
+                " WHERE item_id = ?",
+                (
+                    market,
+                    source_id,
+                    symbol,
+                    title,
+                    source_url,
+                    published_at,
+                    authority,
+                    direction,
+                    horizon,
+                    float(importance),
+                    float(confidence),
+                    action,
+                    json.dumps(merged, ensure_ascii=False),
+                    item_id,
+                ),
+            )
+            _commit_if_idle(conn)
+            return item_id, False
+        item_id = f"intel-{uuid4().hex[:12]}"
+        conn.execute(
+            "INSERT INTO intelligence_items"
+            " (item_id, bot, market, source_id, symbol, title, source_url,"
+            " published_at, observed_at, authority, direction, horizon,"
+            " importance, confidence, action, dedupe_key, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                item_id,
+                self.bot,
+                market,
+                source_id,
+                symbol,
+                title,
+                source_url,
+                published_at,
+                now,
+                authority,
+                direction,
+                horizon,
+                float(importance),
+                float(confidence),
+                action,
+                dedupe_key,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        _commit_if_idle(conn)
+        return item_id, True
+
+    def list(
+        self,
+        *,
+        market: str | None = None,
+        limit: int = 50,
+        min_importance: float | None = None,
+    ) -> list[dict]:
+        sql = (
+            "SELECT item_id, market, source_id, symbol, title, source_url,"
+            " published_at, observed_at, authority, direction, horizon,"
+            " importance, confidence, action, payload"
+            " FROM intelligence_items WHERE bot = ?"
+        )
+        params: list = [self.bot]
+        if market:
+            sql += " AND market = ?"
+            params.append(market)
+        if min_importance is not None:
+            sql += " AND importance >= ?"
+            params.append(float(min_importance))
+        sql += " ORDER BY observed_at DESC LIMIT ?"
+        params.append(limit)
+        rows = _get().execute(sql, params).fetchall()
+        return [
+            {
+                "item_id": r[0],
+                "market": r[1],
+                "source_id": r[2],
+                "symbol": r[3],
+                "title": r[4],
+                "source_url": r[5],
+                "published_at": r[6],
+                "observed_at": r[7],
+                "authority": r[8],
+                "direction": r[9],
+                "horizon": r[10],
+                "importance": r[11],
+                "confidence": r[12],
+                "action": r[13],
+                "payload": json.loads(r[14]) if r[14] else {},
+            }
+            for r in rows
+        ]
+
+    def update_payload(self, item_id: str, payload: dict) -> None:
+        conn = _get()
+        conn.execute(
+            "UPDATE intelligence_items SET payload = ? WHERE item_id = ? AND bot = ?",
+            (json.dumps(payload, ensure_ascii=False), item_id, self.bot),
+        )
+        _commit_if_idle(conn)
+
+
+class AuditReportStore:
+    """结构化审计报告：按 bot/period 去重，供 Projection 与 Chief 消费。"""
+
+    def __init__(self, bot: str):
+        self.bot = bot
+
+    def upsert(
+        self,
+        *,
+        report_kind: str,
+        period_key: str,
+        market: str,
+        payload: dict,
+        created_at: str | None = None,
+    ) -> str:
+        conn = _get()
+        row = conn.execute(
+            "SELECT report_id FROM audit_reports"
+            " WHERE bot = ? AND report_kind = ? AND period_key = ?",
+            (self.bot, report_kind, period_key),
+        ).fetchone()
+        now = created_at or datetime.now(UTC).isoformat()
+        if row is not None:
+            report_id = row[0]
+            conn.execute(
+                "UPDATE audit_reports SET market = ?, created_at = ?, payload = ?"
+                " WHERE report_id = ?",
+                (market, now, json.dumps(payload, ensure_ascii=False), report_id),
+            )
+            _commit_if_idle(conn)
+            return report_id
+        report_id = f"report-{uuid4().hex[:12]}"
+        conn.execute(
+            "INSERT INTO audit_reports"
+            " (report_id, bot, market, report_kind, period_key, created_at, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                report_id,
+                self.bot,
+                market,
+                report_kind,
+                period_key,
+                now,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        _commit_if_idle(conn)
+        return report_id
+
+    def list(
+        self,
+        *,
+        report_kind: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        sql = (
+            "SELECT report_id, market, report_kind, period_key, created_at, payload"
+            " FROM audit_reports WHERE bot = ?"
+        )
+        params: list = [self.bot]
+        if report_kind:
+            sql += " AND report_kind = ?"
+            params.append(report_kind)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = _get().execute(sql, params).fetchall()
+        return [
+            {
+                "report_id": r[0],
+                "market": r[1],
+                "report_kind": r[2],
+                "period_key": r[3],
+                "created_at": r[4],
+                "payload": json.loads(r[5]) if r[5] else {},
+            }
+            for r in rows
+        ]
+
+
+class DecisionLedger:
+    """统一决策账本。没有关联的交易无法学习。"""
+
+    def __init__(self, bot: str):
+        self.bot = bot
+
+    def upsert(self, record: dict) -> tuple[str, bool]:
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        event_id = record.get("event_id")
+        signal_id = record.get("signal_id")
+        action = record.get("action")
+        existing = conn.execute(
+            "SELECT decision_id FROM decision_ledger"
+            " WHERE bot = ? AND ifnull(event_id,'') = ifnull(?,'')"
+            " AND ifnull(signal_id,'') = ifnull(?,'') AND ifnull(action,'') = ifnull(?,'')",
+            (self.bot, event_id, signal_id, action),
+        ).fetchone()
+        payload = {
+            "decision_id": record.get("decision_id"),
+            "bot": self.bot,
+            "market": record["market"],
+            "symbol": record.get("symbol"),
+            "status": record.get("status") or "SHADOW",
+            "intel_grade": record["intel_grade"],
+            "execution_lane": record["execution_lane"],
+            "event_id": event_id,
+            "intelligence_item_id": record.get("intelligence_item_id"),
+            "signal_id": signal_id,
+            "strategy_id": record.get("strategy_id"),
+            "strategy_version": record.get("strategy_version"),
+            "risk_snapshot_id": record.get("risk_snapshot_id"),
+            "task_id": record.get("task_id"),
+            "approval_id": record.get("approval_id"),
+            "order_id": record.get("order_id"),
+            "fill_id": record.get("fill_id"),
+            "audit_id": record.get("audit_id"),
+            "capital_budget": record.get("capital_budget") or "0",
+            "max_risk": record.get("max_risk") or "0",
+            "requires_approval": 1 if record.get("requires_approval", True) else 0,
+            "can_apply": 0,
+            "direction": record.get("direction"),
+            "confidence": str(record.get("confidence") or ""),
+            "impact_horizon": record.get("impact_horizon"),
+            "action": action,
+            "entry_plan": json.dumps(record.get("entry_plan") or {}, ensure_ascii=False),
+            "exit_plan": json.dumps(record.get("exit_plan") or {}, ensure_ascii=False),
+            "evidence_refs": json.dumps(record.get("evidence_refs") or [], ensure_ascii=False),
+            "payload": json.dumps(record.get("payload") or {}, ensure_ascii=False),
+            "created_at": now,
+            "updated_at": now,
+        }
+        if existing:
+            decision_id = existing[0]
+            prior = conn.execute(
+                "SELECT fill_id, order_id, approval_id, audit_id, payload"
+                " FROM decision_ledger WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            fill_id = payload["fill_id"] or (prior[0] if prior else None)
+            order_id = payload["order_id"] or (prior[1] if prior else None)
+            approval_id = payload["approval_id"] or (prior[2] if prior else None)
+            audit_id = payload["audit_id"] or (prior[3] if prior else None)
+            prior_payload = json.loads(prior[4]) if prior and prior[4] else {}
+            merged = {**prior_payload, **json.loads(payload["payload"])}
+            if prior_payload.get("trade") and "trade" not in json.loads(payload["payload"]):
+                merged["trade"] = prior_payload["trade"]
+            conn.execute(
+                """
+                UPDATE decision_ledger SET
+                    symbol=?, status=?, intel_grade=?, execution_lane=?,
+                    intelligence_item_id=?, strategy_id=?, strategy_version=?,
+                    risk_snapshot_id=?, task_id=?, approval_id=?, order_id=?, fill_id=?, audit_id=?,
+                    capital_budget=?, max_risk=?, direction=?, confidence=?,
+                    impact_horizon=?, entry_plan=?, exit_plan=?, evidence_refs=?,
+                    payload=?, updated_at=?
+                WHERE decision_id=?
+                """,
+                (
+                    payload["symbol"],
+                    payload["status"] if payload["status"] != "SHADOW" or not fill_id else "FILLED",
+                    payload["intel_grade"],
+                    payload["execution_lane"],
+                    payload["intelligence_item_id"],
+                    payload["strategy_id"],
+                    payload["strategy_version"],
+                    payload["risk_snapshot_id"],
+                    payload["task_id"],
+                    approval_id,
+                    order_id,
+                    fill_id,
+                    audit_id,
+                    payload["capital_budget"],
+                    payload["max_risk"],
+                    payload["direction"],
+                    payload["confidence"],
+                    payload["impact_horizon"],
+                    payload["entry_plan"],
+                    payload["exit_plan"],
+                    payload["evidence_refs"],
+                    json.dumps(merged, ensure_ascii=False),
+                    now,
+                    decision_id,
+                ),
+            )
+            _commit_if_idle(conn)
+            return decision_id, False
+        decision_id = record.get("decision_id") or f"dec-{uuid4().hex[:12]}"
+        conn.execute(
+            """
+            INSERT INTO decision_ledger (
+                decision_id, bot, market, symbol, status, intel_grade, execution_lane,
+                event_id, intelligence_item_id, signal_id, strategy_id, strategy_version,
+                risk_snapshot_id, task_id, approval_id, order_id, fill_id, audit_id, capital_budget,
+                max_risk, requires_approval, can_apply, direction, confidence,
+                impact_horizon, action, entry_plan, exit_plan, evidence_refs, payload,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                decision_id,
+                self.bot,
+                payload["market"],
+                payload["symbol"],
+                payload["status"],
+                payload["intel_grade"],
+                payload["execution_lane"],
+                payload["event_id"],
+                payload["intelligence_item_id"],
+                payload["signal_id"],
+                payload["strategy_id"],
+                payload["strategy_version"],
+                payload["risk_snapshot_id"],
+                payload["task_id"],
+                payload["approval_id"],
+                payload["order_id"],
+                payload["fill_id"],
+                payload["audit_id"],
+                payload["capital_budget"],
+                payload["max_risk"],
+                payload["requires_approval"],
+                payload["direction"],
+                payload["confidence"],
+                payload["impact_horizon"],
+                payload["action"],
+                payload["entry_plan"],
+                payload["exit_plan"],
+                payload["evidence_refs"],
+                payload["payload"],
+                now,
+                now,
+            ),
+        )
+        _commit_if_idle(conn)
+        return decision_id, True
+
+    def list(self, *, limit: int = 50) -> list[dict]:
+        rows = _get().execute(
+            "SELECT decision_id, market, symbol, status, intel_grade, execution_lane,"
+            " event_id, intelligence_item_id, signal_id, strategy_id, strategy_version,"
+            " risk_snapshot_id, task_id, approval_id, order_id, fill_id, audit_id, action,"
+            " can_apply, entry_plan, exit_plan, evidence_refs, created_at, payload"
+            " FROM decision_ledger WHERE bot = ? ORDER BY updated_at DESC LIMIT ?",
+            (self.bot, limit),
+        ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def get(self, decision_id: str) -> dict | None:
+        row = _get().execute(
+            "SELECT decision_id, market, symbol, status, intel_grade, execution_lane,"
+            " event_id, intelligence_item_id, signal_id, strategy_id, strategy_version,"
+            " risk_snapshot_id, task_id, approval_id, order_id, fill_id, audit_id, action,"
+            " can_apply, entry_plan, exit_plan, evidence_refs, created_at, payload"
+            " FROM decision_ledger WHERE bot = ? AND decision_id = ?",
+            (self.bot, decision_id),
+        ).fetchone()
+        return self._row(row) if row else None
+
+    def find_by_signal(self, signal_id: str) -> dict | None:
+        if not signal_id:
+            return None
+        row = _get().execute(
+            "SELECT decision_id FROM decision_ledger WHERE bot = ? AND signal_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (self.bot, signal_id),
+        ).fetchone()
+        return self.get(row[0]) if row else None
+
+    def find_by_fill(self, fill_id: str) -> dict | None:
+        if not fill_id:
+            return None
+        row = _get().execute(
+            "SELECT decision_id FROM decision_ledger"
+            " WHERE bot = ? AND (fill_id = ? OR event_id = ?) ORDER BY updated_at DESC LIMIT 1",
+            (self.bot, fill_id, fill_id),
+        ).fetchone()
+        return self.get(row[0]) if row else None
+
+    def find_by_intelligence_item(self, item_id: str) -> dict | None:
+        if not item_id:
+            return None
+        row = _get().execute(
+            "SELECT decision_id FROM decision_ledger"
+            " WHERE bot = ? AND intelligence_item_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (self.bot, item_id),
+        ).fetchone()
+        return self.get(row[0]) if row else None
+
+    def attach_judgment(self, decision_id: str, judgment: dict) -> None:
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        row = conn.execute(
+            "SELECT payload, exit_plan FROM decision_ledger WHERE decision_id = ? AND bot = ?",
+            (decision_id, self.bot),
+        ).fetchone()
+        payload = json.loads(row[0]) if row and row[0] else {}
+        exit_plan = json.loads(row[1]) if row and row[1] else {}
+        payload["judgment"] = {**judgment, "can_apply": False}
+        payload["follow_up"] = judgment.get("follow_up") or payload.get("follow_up")
+        invalidation = list(exit_plan.get("invalidation") or [])
+        for note in judgment.get("invalidation") or []:
+            if note not in invalidation:
+                invalidation.append(note)
+        exit_plan["invalidation"] = invalidation
+        conn.execute(
+            "UPDATE decision_ledger SET payload = ?, exit_plan = ?, updated_at = ?"
+            " WHERE decision_id = ? AND bot = ?",
+            (
+                json.dumps(payload, ensure_ascii=False),
+                json.dumps(exit_plan, ensure_ascii=False),
+                now,
+                decision_id,
+                self.bot,
+            ),
+        )
+        _commit_if_idle(conn)
+
+    def find_by_task(self, task_id: str) -> dict | None:
+        if not task_id:
+            return None
+        row = _get().execute(
+            "SELECT decision_id FROM decision_ledger"
+            " WHERE bot = ? AND task_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (self.bot, task_id),
+        ).fetchone()
+        return self.get(row[0]) if row else None
+
+    def _row(self, row: tuple) -> dict:
+        return {
+            "decision_id": row[0],
+            "market": row[1],
+            "symbol": row[2],
+            "status": row[3],
+            "intel_grade": row[4],
+            "execution_lane": row[5],
+            "event_id": row[6],
+            "intelligence_item_id": row[7],
+            "signal_id": row[8],
+            "strategy_id": row[9],
+            "strategy_version": row[10],
+            "risk_snapshot_id": row[11],
+            "task_id": row[12],
+            "approval_id": row[13],
+            "order_id": row[14],
+            "fill_id": row[15],
+            "audit_id": row[16],
+            "action": row[17],
+            "can_apply": bool(row[18]),
+            "entry_plan": json.loads(row[19] or "{}"),
+            "exit_plan": json.loads(row[20] or "{}"),
+            "evidence_refs": json.loads(row[21] or "[]"),
+            "created_at": row[22],
+            "payload": json.loads(row[23] or "{}"),
+        }
+
+    def attach_fill(self, decision_id: str, *, fill_id: str, order_id: str | None, trade: dict) -> None:
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        row = conn.execute(
+            "SELECT payload FROM decision_ledger WHERE decision_id = ? AND bot = ?",
+            (decision_id, self.bot),
+        ).fetchone()
+        payload = json.loads(row[0]) if row and row[0] else {}
+        payload["trade"] = trade
+        conn.execute(
+            "UPDATE decision_ledger SET fill_id = ?, order_id = ?, status = ?, payload = ?, updated_at = ?"
+            " WHERE decision_id = ? AND bot = ?",
+            (fill_id, order_id, "FILLED", json.dumps(payload, ensure_ascii=False), now, decision_id, self.bot),
+        )
+        _commit_if_idle(conn)
+
+    def attach_audit(self, decision_id: str, audit: dict) -> str:
+        audit_id = str(audit.get("audit_id") or f"aud-{uuid4().hex[:12]}")
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        row = conn.execute(
+            "SELECT payload FROM decision_ledger WHERE decision_id = ? AND bot = ?",
+            (decision_id, self.bot),
+        ).fetchone()
+        payload = json.loads(row[0]) if row and row[0] else {}
+        payload["audit"] = {**audit, "audit_id": audit_id}
+        conn.execute(
+            "UPDATE decision_ledger SET audit_id = ?, payload = ?, updated_at = ?"
+            " WHERE decision_id = ? AND bot = ?",
+            (audit_id, json.dumps(payload, ensure_ascii=False), now, decision_id, self.bot),
+        )
+        _commit_if_idle(conn)
+        return audit_id
+
+    def coverage(self) -> dict[str, int]:
+        rows = self.list(limit=500)
+        linked = [
+            row
+            for row in rows
+            if (row.get("event_id") or row.get("signal_id"))
+            and row.get("strategy_id")
+        ]
+        reconciled = 0
+        for row in rows:
+            reconciliation = (row.get("payload") or {}).get("reconciliation") or {}
+            if reconciliation.get("reconciliation_status") == "MATCHED":
+                reconciled += 1
+        return {
+            "decisions": len(rows),
+            "fully_linked": len(linked),
+            "approved": sum(1 for row in rows if row.get("approval_id")),
+            "ordered": sum(1 for row in rows if row.get("order_id")),
+            "filled": sum(1 for row in rows if row.get("fill_id")),
+            "reconciled": reconciled,
+            "audited": sum(1 for row in rows if row.get("audit_id")),
+        }
 
 
 class EventLog:

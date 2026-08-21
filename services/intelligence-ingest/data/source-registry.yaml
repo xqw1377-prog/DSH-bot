@@ -1,0 +1,303 @@
+# 24 币白名单来自 6celue DEFAULT_SYMBOLS_ORDER，DSH 只复制清单，不导入 6celue 代码。
+# 采集优先级：官方 API > RSS/数据接口 > 静态 HTML 增量 > Playwright（本服务禁用）。
+# X 必须走 Filtered Stream；没有 X_BEARER_TOKEN 则保持 disabled。
+# 美股行情：Shadow MVP 只用授权延迟/IEX，不上完整 SIP，不爬 Yahoo/Google。
+
+version: 1
+universe_source: "6celue.engine.coin_registry.DEFAULT_SYMBOLS_ORDER"
+us_market:
+  tier: delayed_iex
+  provider: alpaca
+  enabled: false
+  requires: [ALPACA_API_KEY, ALPACA_SECRET_KEY]
+  note: Shadow/Paper 复盘用不需要完整实时全市场。开通密钥后再 enable。
+
+crypto_assets:
+  - symbol: HYPEUSDT
+    asset: HYPE
+    name: Hyperliquid
+    website: https://hyperliquid.xyz
+    official_x: HyperliquidX
+    founder_x: chameleon_jeff
+    handle_status: official
+    github: null
+  - symbol: ENAUSDT
+    asset: ENA
+    name: Ethena
+    website: https://ethena.fi
+    official_x: ethena_labs
+    founder_x: gyrou
+    handle_status: probable
+    github: ethena-labs/ethena
+  - symbol: NEARUSDT
+    asset: NEAR
+    name: NEAR Protocol
+    website: https://near.org
+    official_x: NEARProtocol
+    founder_x: ilblackdragon
+    handle_status: official
+    github: near/nearcore
+  - symbol: TAOUSDT
+    asset: TAO
+    name: Bittensor
+    website: https://bittensor.com
+    official_x: opentensor
+    founder_x: const_reborn
+    handle_status: probable
+    github: opentensor/bittensor
+  - symbol: LINKUSDT
+    asset: LINK
+    name: Chainlink
+    website: https://chain.link
+    official_x: chainlink
+    founder_x: SergeyNazarov
+    handle_status: official
+    github: smartcontractkit/chainlink
+    rss: https://blog.chain.link/feed/
+  - symbol: AAVEUSDT
+    asset: AAVE
+    name: Aave
+    website: https://aave.com
+    official_x: aave
+    founder_x: StaniKulechov
+    handle_status: official
+    github: aave/aave-v3-core
+  - symbol: DOGEUSDT
+    asset: DOGE
+    name: Dogecoin
+    website: https://dogecoin.com
+    official_x: dogecoin
+    founder_x: ""
+    handle_status: official
+    github: dogecoin/dogecoin
+  - symbol: ADAUSDT
+    asset: ADA
+    name: Cardano
+    website: https://cardano.org
+    official_x: Cardano
+    founder_x: IOHK_Charles
+    handle_status: official
+    github: IntersectMBO/cardano-node
+  - symbol: XMRUSDT
+    asset: XMR
+    name: Monero
+    website: https://www.getmonero.org
+    official_x: monero
+    founder_x: ""
+    handle_status: official
+    github: monero-project/monero
+  - symbol: SUIUSDT
+    asset: SUI
+    name: Sui
+    website: https://sui.io
+    official_x: SuiNetwork
+    founder_x: EmanAbio
+    handle_status: official
+    github: MystenLabs/sui
+  - symbol: FETUSDT
+    asset: FET
+    name: Fetch.ai / ASI
+    website: https://fetch.ai
+    official_x: Fetch_ai
+    founder_x: HumayunSheikh
+    handle_status: probable
+    github: fetchai/fetchd
+  - symbol: ORDIUSDT
+    asset: ORDI
+    name: ORDI / Ordinals
+    website: https://ordinals.com
+    official_x: ""
+    founder_x: rodarmor
+    handle_status: probable
+    github: ordinals/ord
+  - symbol: SOLUSDT
+    asset: SOL
+    name: Solana
+    website: https://solana.com
+    official_x: solana
+    founder_x: aeyakovenko
+    handle_status: official
+    github: anza-xyz/agave
+  - symbol: ETHUSDT
+    asset: ETH
+    name: Ethereum
+    website: https://ethereum.org
+    official_x: ethereum
+    founder_x: VitalikButerin
+    handle_status: official
+    github: ethereum/go-ethereum
+    rss: https://blog.ethereum.org/en/feed.xml
+  - symbol: XRPUSDT
+    asset: XRP
+    name: XRP Ledger
+    website: https://xrpl.org
+    official_x: Ripple
+    founder_x: bgarlinghouse
+    handle_status: official
+    github: XRPLF/rippled
+  - symbol: LTCUSDT
+    asset: LTC
+    name: Litecoin
+    website: https://litecoin.org
+    official_x: litecoin
+    founder_x: SatoshiLite
+    handle_status: official
+    github: litecoin-project/litecoin
+  - symbol: AVAXUSDT
+    asset: AVAX
+    name: Avalanche
+    website: https://www.avax.network
+    official_x: avax
+    founder_x: el33th4xor
+    handle_status: official
+    github: ava-labs/avalanchego
+  - symbol: WLDUSDT
+    asset: WLD
+    name: World
+    website: https://world.org
+    official_x: worldcoin
+    founder_x: ""
+    handle_status: official
+    github: worldcoin/world-id
+    note: 不默认跟创始人个人账号，噪音和争议过大。
+  - symbol: BNBUSDT
+    asset: BNB
+    name: BNB Chain
+    website: https://www.bnbchain.org
+    official_x: BNBCHAIN
+    founder_x: ""
+    handle_status: official
+    github: bnb-chain/bsc
+  - symbol: OPUSDT
+    asset: OP
+    name: Optimism
+    website: https://www.optimism.io
+    official_x: Optimism
+    founder_x: karl_dot_tech
+    handle_status: official
+    github: ethereum-optimism/optimism
+  - symbol: TIAUSDT
+    asset: TIA
+    name: Celestia
+    website: https://celestia.org
+    official_x: CelestiaOrg
+    founder_x: musalbas
+    handle_status: official
+    github: celestiaorg/celestia-app
+  - symbol: RENDERUSDT
+    asset: RENDER
+    name: Render Network
+    website: https://rendernetwork.com
+    official_x: rendernetwork
+    founder_x: JulesUrbach
+    handle_status: probable
+    github: rendernetwork/render-token
+  - symbol: BTCUSDT
+    asset: BTC
+    name: Bitcoin
+    website: https://bitcoin.org
+    official_x: ""
+    founder_x: ""
+    handle_status: none
+    github: bitcoin/bitcoin
+    note: 比特币没有官方 X 账号，禁止编造。
+  - symbol: BCHUSDT
+    asset: BCH
+    name: Bitcoin Cash
+    website: https://bitcoincash.org
+    official_x: BITCOINCASH
+    founder_x: ""
+    handle_status: probable
+    github: Bitcoin-ABC/bitcoin-abc
+
+sources:
+  - id: sec-current-filings
+    market: US
+    tier: PRIMARY
+    method: SEC_EDGAR
+    enabled: true
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&owner=include&count=40&output=atom
+    assets: []
+    event_types: [US_MARKET_SPILLOVER, EARNINGS, REGULATORY_ACTION]
+    note: data.sec.gov / EDGAR Atom。必须带 User-Agent，不超过 10 req/s。
+
+  - id: nasdaq-trade-halts
+    market: US
+    tier: PRIMARY
+    method: NASDAQ_HALT_RSS
+    enabled: true
+    url: https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts
+    assets: []
+    event_types: [TRADE_HALT, US_MARKET_SPILLOVER]
+    min_interval_seconds: 60
+
+  - id: gov-cn-policy
+    market: A_SHARE
+    tier: PRIMARY
+    method: HTML_INCREMENTAL
+    enabled: true
+    url: https://www.gov.cn/zhengce/zhengceku/gwywj/home.htm
+    allow_path_prefixes: ["/zhengce/", "/lianbo/", "/xinwen/"]
+    assets: []
+    event_types: [INDUSTRY_POLICY, MONETARY_POLICY]
+    min_interval_seconds: 3
+
+  - id: pbc-news
+    market: A_SHARE
+    tier: PRIMARY
+    method: HTML_INCREMENTAL
+    enabled: true
+    url: https://www.pbc.gov.cn/goutongjiaoliu/113456/113469/index.html
+    allow_path_prefixes: ["/goutongjiaoliu/", "/zhengcehuobisi/"]
+    assets: []
+    event_types: [MONETARY_POLICY, FX_SHOCK]
+    min_interval_seconds: 3
+
+  - id: csrc-news
+    market: A_SHARE
+    tier: PRIMARY
+    method: HTML_INCREMENTAL
+    enabled: true
+    url: https://www.csrc.gov.cn/csrc/c100028/common_list.shtml
+    allow_path_prefixes: ["/csrc/"]
+    assets: []
+    event_types: [REGULATORY_ACTION]
+    min_interval_seconds: 3
+
+  - id: ndrc-docs
+    market: A_SHARE
+    tier: PRIMARY
+    method: HTML_INCREMENTAL
+    enabled: true
+    url: https://www.ndrc.gov.cn/xxgk/zcfb/
+    allow_path_prefixes: ["/xxgk/"]
+    assets: []
+    event_types: [INDUSTRY_POLICY]
+    min_interval_seconds: 3
+
+  - id: cninfo-announcements
+    market: A_SHARE
+    tier: PRIMARY
+    method: CNINFO_API
+    enabled: false
+    url: https://www.cninfo.com.cn/
+    requires: [CNINFO_API_TOKEN]
+    note: 法定信披。正式使用申请授权接口，不长期逆向网页。
+
+  - id: alpaca-us-quotes
+    market: US
+    tier: SECONDARY
+    method: ALPACA_MARKET_DATA
+    enabled: false
+    url: https://data.alpaca.markets
+    requires: [ALPACA_API_KEY, ALPACA_SECRET_KEY]
+    note: 免费层主要是 IEX 延迟/部分覆盖。
+
+  - id: x-filtered-stream
+    market: CRYPTO
+    tier: PRIMARY
+    method: X_FILTERED_STREAM
+    enabled: false
+    url: https://api.x.com/2/tweets/search/stream
+    requires: [X_BEARER_TOKEN]
+    note: 按白名单 from:official / from:founder 建规则。断线用 Recent Search 补 7 天。禁止 Playwright 登录抓时间线。

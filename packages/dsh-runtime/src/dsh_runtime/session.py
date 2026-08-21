@@ -11,7 +11,14 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from dsh_runtime.profile import Profile
-from dsh_runtime.store import EventLog, Memory, publish_pending
+from dsh_runtime.store import (
+    AuditReportStore,
+    DecisionLedger,
+    EventLog,
+    IntelligenceStore,
+    Memory,
+    publish_pending,
+)
 from dsh_runtime.tasks import TaskStore
 
 
@@ -29,6 +36,9 @@ class BotSession:
     memory: Memory
     events: EventLog
     tasks: TaskStore
+    intelligence: IntelligenceStore
+    reports: AuditReportStore
+    ledger: DecisionLedger
 
     @classmethod
     def for_profile(cls, profile: Profile) -> "BotSession":
@@ -38,6 +48,9 @@ class BotSession:
             memory=Memory(bot=profile.name),
             events=events,
             tasks=TaskStore(bot=profile.name, events=events),
+            intelligence=IntelligenceStore(bot=profile.name),
+            reports=AuditReportStore(bot=profile.name),
+            ledger=DecisionLedger(bot=profile.name),
         )
 
     def use(self, tool: str) -> None:

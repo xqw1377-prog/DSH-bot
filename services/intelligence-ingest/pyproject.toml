@@ -1,0 +1,13 @@
+[project]
+name = "intelligence-ingest"
+version = "0.1.0"
+description = "只读事件情报采集：官方 API/RSS/增量 HTML，禁止万能爬虫和交易密钥"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27", "pyyaml>=6", "feedparser>=6"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

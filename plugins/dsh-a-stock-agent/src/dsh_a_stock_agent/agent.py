@@ -2,9 +2,29 @@
 
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 
 from dsh_contracts import Market
+from dsh_runtime import BotIntelligenceJob, StrategyAuditorJob
 from dsh_runtime.execution import TradeExecutionCore
+
+
+class _ASharePolicy:
+    """整手 / 涨跌停由执行核调用；交易时段以 health.market_session 为准。"""
+
+    def session_blocked(self, now=None) -> str | None:
+        return None
+
+    def default_quantity(self, signal: dict) -> str:
+        return str(signal.get("quantity") or "100")
+
+    def validate_order(self, market, quantity: str, est_price, symbol=None) -> str | None:
+        qty = Decimal(str(quantity or "0"))
+        if qty == 0:
+            return "数量为零"
+        if qty % Decimal("100") != 0:
+            return "A 股必须整手（100 股）"
+        return None
 
 
 class AShareAgent(TradeExecutionCore):
@@ -29,4 +49,24 @@ class AShareAgent(TradeExecutionCore):
             mode=mode,
             idempotency_prefix="ashare-paper",
             now_fn=now_fn,
+            policy=_ASharePolicy(),
         )
+        self._intelligence = BotIntelligenceJob(
+            bot_name=self.name,
+            market=Market.A_SHARE.value,
+            source_env="DSH_A_SHARE_INTELLIGENCE_SOURCES",
+            watchlist=(),
+            default_quantity="100",
+        )
+        self._auditor = StrategyAuditorJob(
+            bot_name=self.name,
+            market=Market.A_SHARE.value,
+            report_kind="intelligence-daily",
+        )
+
+    def tick(self, session) -> None:
+        session.use("query_positions")
+        holdings = self.gateway.get_positions(self.market, account_id=self.account_id)
+        self._intelligence.run(session, holdings=holdings)
+        super().tick(session)
+        self._auditor.run(session)

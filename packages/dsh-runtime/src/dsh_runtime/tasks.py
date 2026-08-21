@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 # 任务只能沿主链推进；终态不可逆
 _TRANSITIONS: dict[str, set[str]] = {
     # 请求确定未到达交易系统（预览/审批/再校验失败）→ PRE_SUBMIT_FAILED
-    "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED", "PRE_SUBMIT_FAILED"},
+    "SIGNAL_RECEIVED": {"PREVIEWED", "FAILED", "PRE_SUBMIT_FAILED", "SHADOW_RECORDED"},
     "PREVIEWED": {"AWAITING_APPROVAL", "FAILED", "PRE_SUBMIT_FAILED", "SHADOW_RECORDED"},
     "AWAITING_APPROVAL": {
         "APPROVED_SUBMITTING", "REJECTED", "EXPIRED",

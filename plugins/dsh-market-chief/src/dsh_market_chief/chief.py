@@ -128,11 +128,16 @@ class MarketChiefAgent:
         self._forward_open_incidents(session)
 
         # Bot 健康度：跨 Bot 只读 Runtime 账本（同库），不写入任何 Bot 状态
+        session.use("intelligence_review")
         summary["bots"] = self._bot_health()
         summary["open_incidents"] = self._open_incident_count()
+        summary["intelligence"] = self._intelligence_summary()
+        session.use("audit_review")
+        summary["latest_audits"] = self._latest_audits()
 
         session.use("report_generation")
         self._write_summary(session, summary)
+        self._write_daily_briefing(session)
         session.events.emit(
             "market/chief.summary", "GLOBAL", "bot", self.name, summary
         )
@@ -213,10 +218,253 @@ class MarketChiefAgent:
             kind="todo",
             tags=["todo", "approvals"],
         )
+        intel = summary.get("intelligence") or {}
+        if intel.get("high_priority", 0):
+            session.memory.remember(
+                f"高优先级情报 {intel['high_priority']} 条，已进入 Shadow 建议。",
+                kind="todo",
+                tags=["todo", "intelligence"],
+            )
         if summary["degraded"]:
             session.memory.remember(
                 f"市场 {summary['degraded']} 状态降级，建议暂停相关 Bot 的新信号处理并关注恢复",
                 kind="advice", tags=["advice", "degraded"],
+            )
+
+    def _shadow_rows(self) -> list[dict]:
+        import json as _json
+
+        try:
+            conn = _runtime_conn()
+            rows = conn.execute(
+                "SELECT bot, task_id, subject_id, payload, updated_at FROM bot_tasks"
+                " WHERE status = 'SHADOW_RECORDED' ORDER BY updated_at DESC"
+            ).fetchall()
+        except Exception:
+            return []
+        items = []
+        for bot, task_id, subject_id, payload, updated_at in rows:
+            data = _json.loads(payload) if payload else {}
+            decision = data.get("shadow_decision") or {}
+            items.append(
+                {
+                    "bot": bot,
+                    "task_id": task_id,
+                    "signal_id": subject_id,
+                    "market": data.get("market"),
+                    "symbol": data.get("symbol"),
+                    "side": data.get("side"),
+                    "action": decision.get("action") or "HOLD",
+                    "skip_reason": decision.get("skip_reason"),
+                    "strength": decision.get("strength") or data.get("strength") or 0,
+                    "quantity": decision.get("quantity"),
+                    "suggested_price": decision.get("suggested_price"),
+                    "outcome_price": decision.get("outcome_price"),
+                    "simulated_pnl": decision.get("simulated_pnl"),
+                    "why": decision.get("why"),
+                    "why_not": decision.get("why_not"),
+                    "disclaimer": decision.get("disclaimer") or "仅模拟，不会下单",
+                    "updated_at": updated_at,
+                }
+            )
+        return items
+
+    def _intelligence_rows(self) -> list[dict]:
+        import json as _json
+
+        try:
+            conn = _runtime_conn()
+            rows = conn.execute(
+                "SELECT bot, market, symbol, title, authority, direction, horizon,"
+                " importance, confidence, action, payload, observed_at"
+                " FROM intelligence_items ORDER BY observed_at DESC LIMIT 100"
+            ).fetchall()
+        except Exception:
+            return []
+        return [
+            {
+                "bot": r[0],
+                "market": r[1],
+                "symbol": r[2],
+                "title": r[3],
+                "authority": r[4],
+                "direction": r[5],
+                "horizon": r[6],
+                "importance": r[7],
+                "confidence": r[8],
+                "action": r[9],
+                "payload": _json.loads(r[10]) if r[10] else {},
+                "observed_at": r[11],
+            }
+            for r in rows
+        ]
+
+    def _intelligence_summary(self) -> dict:
+        rows = self._intelligence_rows()
+        high = [row for row in rows if float(row.get("importance") or 0) >= 0.7]
+        direct = [
+            row for row in rows
+            if row.get("action") in {"BUY", "SELL", "HOLD", "WATCH"}
+        ]
+        return {
+            "total": len(rows),
+            "high_priority": len(high),
+            "top": direct[:5],
+        }
+
+    def _latest_audits(self) -> list[dict]:
+        import json as _json
+
+        try:
+            conn = _runtime_conn()
+            rows = conn.execute(
+                "SELECT bot, report_kind, created_at, payload"
+                " FROM audit_reports ORDER BY created_at DESC LIMIT 10"
+            ).fetchall()
+        except Exception:
+            return []
+        return [
+            {
+                "bot": r[0],
+                "report_kind": r[1],
+                "created_at": r[2],
+                "payload": _json.loads(r[3]) if r[3] else {},
+            }
+            for r in rows
+        ]
+
+    def _focus_today(self, focus: list[dict], top_intel: list[dict], risks: list[dict]) -> list[dict]:
+        items: list[dict] = []
+        for row in focus:
+            items.append(
+                {
+                    "kind": "shadow",
+                    "market": row.get("market"),
+                    "symbol": row.get("symbol"),
+                    "title": f"{row.get('action')} {row.get('symbol')}",
+                    "why": row.get("why"),
+                    "interrupt": row.get("action") in {"BUY", "SELL"},
+                }
+            )
+        for row in top_intel:
+            items.append(
+                {
+                    "kind": "intelligence",
+                    "market": row.get("market"),
+                    "symbol": row.get("symbol"),
+                    "title": row.get("title"),
+                    "why": f"{row.get('direction')} / {row.get('action')}",
+                    "interrupt": float(row.get("importance") or 0) >= 0.8,
+                }
+            )
+        for row in risks[:2]:
+            items.append(
+                {
+                    "kind": "risk",
+                    "market": row.get("market"),
+                    "symbol": row.get("symbol"),
+                    "title": row.get("skip_reason") or "风险",
+                    "why": row.get("why"),
+                    "interrupt": True,
+                }
+            )
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for row in items:
+            key = f"{row.get('kind')}:{row.get('market')}:{row.get('symbol')}:{row.get('title')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+            if len(unique) >= 5:
+                break
+        return unique
+
+    def _write_daily_briefing(self, session: BotSession) -> None:
+        import json as _json
+        from datetime import UTC, datetime
+
+        rows = self._shadow_rows()
+        rank = {"BUY": 0, "SELL": 0, "HOLD": 1, "ABANDON": 2}
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                rank.get(str(row.get("action")), 3),
+                -float(row.get("strength") or 0),
+            ),
+        )
+        focus = [row for row in ranked if row.get("action") in {"BUY", "SELL"}][:5]
+        abandons = [row for row in ranked if row.get("action") == "ABANDON"]
+        risks = [
+            row for row in ranked
+            if row.get("skip_reason") in {"RISK_LIMIT", "DATA_STALE", "MARKET_CLOSED"}
+        ]
+        intelligence = self._intelligence_rows()
+        top_intel = [
+            {
+                "bot": row.get("bot"),
+                "market": row.get("market"),
+                "symbol": row.get("symbol"),
+                "title": row.get("title"),
+                "action": row.get("action"),
+                "importance": row.get("importance"),
+                "confidence": row.get("confidence"),
+                "direction": row.get("direction"),
+                "horizon": row.get("horizon"),
+            }
+            for row in intelligence
+            if float(row.get("importance") or 0) >= 0.6
+        ][:5]
+        audits = self._latest_audits()
+        briefing = {
+            "as_of": datetime.now(UTC).isoformat(),
+            "focus": focus,
+            "risks": risks[:8],
+            "abandons": abandons[:8],
+            "intelligence": top_intel,
+            "focus_today": self._focus_today(focus, top_intel, risks),
+            "audits": audits[:5],
+            "ranked": ranked[:20],
+            "counts": {
+                "total": len(rows),
+                "execute": len(focus),
+                "abandon": len(abandons),
+                "intelligence": len(intelligence),
+            },
+        }
+        session.memory.remember(
+            _json.dumps(briefing, ensure_ascii=False),
+            kind="daily-briefing",
+            tags=["daily-briefing"],
+        )
+        session.events.emit(
+            "market/chief.briefing", "GLOBAL", "bot", self.name, briefing
+        )
+        if focus:
+            top = "；".join(
+                f"{item.get('market')} {item.get('symbol')} {item.get('action')}"
+                for item in focus[:3]
+            )
+            session.memory.remember(
+                f"今日优先关注：{top}。仅模拟，不会下单。",
+                kind="advice",
+                tags=["advice", "briefing"],
+            )
+        elif top_intel:
+            top = "；".join(
+                f"{item.get('market')} {item.get('symbol') or ''} {item.get('action')} {item.get('title')}"
+                for item in top_intel[:3]
+            )
+            session.memory.remember(
+                f"今日优先情报：{top}。仅 Shadow 建议，不会审批下单。",
+                kind="advice",
+                tags=["advice", "briefing"],
+            )
+        elif abandons:
+            session.memory.remember(
+                f"今日无执行建议，{len(abandons)} 条信号已放弃（闭市/过期/风险）。仅模拟，不会下单。",
+                kind="advice",
+                tags=["advice", "briefing"],
             )
 
 

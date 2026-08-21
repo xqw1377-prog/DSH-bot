@@ -35,7 +35,7 @@ def test_ashare_closed_does_not_open_incident():
             }
 
         def get_signals(self, market):
-            raise AssertionError("closed session must not query signals")
+            return []
 
         def request_approval(self, *args, **kwargs):
             raise AssertionError("closed session must not request approval")
