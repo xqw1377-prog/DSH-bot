@@ -1,13 +1,20 @@
 import type { ProjectRole } from "./types";
 
 /**
- * ADR-003 机器可读映射。第一版只认 Viewer。
- * Approver / RiskOperator 等组名即使出现在 Token 里也不映射。
+ * ADR-003 机器可读映射(完整版)。
+ * v1 只认 Viewer,导致生产环境 Approver/RiskOperator 无组可映射,
+ * 审批与紧急停止成为死路径——与页面的能力展示自相矛盾。
+ * v2 按 ADR 建议落地全部五组;IdentityAdmin 刻意不含交易角色
+ * (职责分离,见 ADR「Security Invariants」)。未知组仍忽略,不自动升格。
  */
 export const GROUP_ROLE_MAPPING = {
-  version: 1,
+  version: 2,
   groups: {
     "dsh-viewers": ["Viewer"],
+    "dsh-approvers": ["Viewer", "Approver"],
+    "dsh-risk-operators": ["Viewer", "RiskOperator"],
+    "dsh-strategy-reviewers": ["Viewer", "StrategyReviewer"],
+    "dsh-identity-admins": ["IdentityAdmin"],
   } satisfies Record<string, ProjectRole[]>,
 } as const;
 

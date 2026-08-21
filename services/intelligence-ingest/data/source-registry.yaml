@@ -28,7 +28,8 @@ crypto_assets:
     official_x: ethena_labs
     founder_x: gyrou
     handle_status: probable
-    github: ethena-labs/ethena
+    github: null
+    note: 实测 ethena-labs 名下仓库均无 release/tag 动态，不虚设 GitHub 源；情报面以官网/X 为准。
   - symbol: NEARUSDT
     asset: NEAR
     name: NEAR Protocol
@@ -158,8 +159,8 @@ crypto_assets:
     official_x: worldcoin
     founder_x: ""
     handle_status: official
-    github: worldcoin/world-id
-    note: 不默认跟创始人个人账号，噪音和争议过大。
+    github: worldcoin/developer-portal
+    note: 不默认跟创始人个人账号，噪音和争议过大。world-id 仓库已不存在，改跟有真实 release 动态的 developer-portal。
   - symbol: BNBUSDT
     asset: BNB
     name: BNB Chain
@@ -191,7 +192,8 @@ crypto_assets:
     official_x: rendernetwork
     founder_x: JulesUrbach
     handle_status: probable
-    github: rendernetwork/render-token
+    github: null
+    note: 实测 rendernetwork 名下仓库不存在或无动态，不虚设 GitHub 源；情报面以官网/X 为准。
   - symbol: BTCUSDT
     asset: BTC
     name: Bitcoin

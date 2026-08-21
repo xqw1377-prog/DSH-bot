@@ -7,7 +7,8 @@ function projectionBase(): string {
   return "/api/projection";
 }
 
-function serverServiceHeaders(): Record<string, string> {
+/** 服务端调用 Projection 的身份头;浏览器侧返回空(走 BFF)。 */
+export function serverServiceHeaders(): Record<string, string> {
   if (typeof window !== "undefined") {
     return {};
   }

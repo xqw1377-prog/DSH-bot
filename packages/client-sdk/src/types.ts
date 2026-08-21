@@ -31,7 +31,18 @@ export type StrategyStage =
   | "RETIRED"
   | "ROLLED_BACK";
 
-export type ApprovalStatus = "REQUESTED" | "APPROVED" | "REJECTED" | "EXPIRED";
+/**
+ * 审批状态机:REQUESTED → APPROVED/REJECTED(人工决定);
+ * APPROVED → CONSUMING(被某笔订单原子占用) → CONSUMED(成交回填)。
+ * 一个审批只能被消费一次;EXPIRED 为超时终态。
+ */
+export type ApprovalStatus =
+  | "REQUESTED"
+  | "APPROVED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "CONSUMING"
+  | "CONSUMED";
 
 /** Bot 任务状态机，见 PRD 附录 A.3。 */
 export type TaskStatus =
@@ -274,6 +285,15 @@ export interface Approval {
   subject_type: "order" | "strategy_promotion" | "risk_budget" | "control_action";
   subject_id: string;
   evidence_refs: string[];
+  /** 订单审批的意图绑定摘要(SHA-256);strategy_promotion 无绑定 */
+  intent_digest?: string | null;
+  /** 审批有效期;过期未决/未消费即 EXPIRED */
+  expires_at?: string | null;
+  /** 消费痕迹:CONSUMING/CONSUMED 时非空,回填成交后含权威订单 ID */
+  consumed_key?: string | null;
+  consumed_request_hash?: string | null;
+  consumed_order_id?: string | null;
+  consumed_at?: string | null;
 }
 
 /** 研究实验账本条目，见 PRD 10.4。实验环境无生产密钥。 */

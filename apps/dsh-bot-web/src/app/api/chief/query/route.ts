@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireViewer } from "@/lib/identity";
+import { serverServiceHeaders } from "@/lib/projection";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,8 @@ export async function POST(request: Request) {
     process.env.PROJECTION_API_URL || "http://127.0.0.1:8004";
   const upstream = await fetch(`${projection}/v1/chief/query`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // 生产 Projection 开鉴权后必须携带服务身份,否则 401
+    headers: { "Content-Type": "application/json", ...serverServiceHeaders() },
     body: JSON.stringify(body),
   });
   const text = await upstream.text();

@@ -4,6 +4,7 @@ import { POST as decideApproval } from "@/app/api/approvals/[id]/decide/route";
 import { POST as emergencyStop } from "@/app/api/control/emergency-stop/route";
 import { GET as getProjection } from "@/app/api/projection/[...path]/route";
 import { resetJwksCacheForTests, setJwksTestHooks } from "@/lib/identity";
+import { rolesFromGroups } from "@/lib/identity/group-role-mapping";
 import { IAP_JWKS_CACHE_TTL_SECONDS, type Jwk } from "./types";
 
 const ISSUER = "https://iap.test";
@@ -297,7 +298,8 @@ describe("IAP Viewer BFF", () => {
   });
 
   it("未映射 Group 的合法 JWT 不能当 Viewer 读", async () => {
-    const token = signJwt(KEY_A, { groups: ["dsh-approvers"] });
+    // dsh-approvers 在 ADR-003 v2 已映射;真正未知的组才应拒绝
+    const token = signJwt(KEY_A, { groups: ["random-sso-group"] });
     const response = await getProjection(projectionRequest(bearer(token)), {
       params: Promise.resolve({ path: ["v1", "health"] }),
     });
@@ -370,5 +372,37 @@ describe("IAP Viewer BFF", () => {
     });
     expect(badHost.status).toBe(503);
     expect(jwksCalls).toBe(0);
+  });
+});
+
+// ---- ADR-003 完整映射(v2):审批/风控/评审/身份管理 ----
+
+describe("rolesFromGroups (ADR-003 v2)", () => {
+  it("maps all five groups per ADR", () => {
+    expect(rolesFromGroups(["dsh-viewers"])).toEqual(["Viewer"]);
+    expect(new Set(rolesFromGroups(["dsh-approvers"]))).toEqual(
+      new Set(["Viewer", "Approver"]));
+    expect(new Set(rolesFromGroups(["dsh-risk-operators"]))).toEqual(
+      new Set(["Viewer", "RiskOperator"]));
+    expect(new Set(rolesFromGroups(["dsh-strategy-reviewers"]))).toEqual(
+      new Set(["Viewer", "StrategyReviewer"]));
+    expect(rolesFromGroups(["dsh-identity-admins"])).toEqual(["IdentityAdmin"]);
+  });
+
+  it("production approvals are no longer a dead path", () => {
+    const roles = rolesFromGroups(["dsh-approvers"]);
+    expect(roles).toContain("Approver");
+  });
+
+  it("IdentityAdmin has no trading roles (separation of duties)", () => {
+    const roles = rolesFromGroups(["dsh-identity-admins"]);
+    expect(roles).not.toContain("Approver");
+    expect(roles).not.toContain("RiskOperator");
+  });
+
+  it("unknown groups are ignored, roles are unioned", () => {
+    expect(rolesFromGroups(["random-sso-group"])).toEqual([]);
+    const union = new Set(rolesFromGroups(["dsh-approvers", "dsh-risk-operators"]));
+    expect(union).toEqual(new Set(["Viewer", "Approver", "RiskOperator"]));
   });
 });
