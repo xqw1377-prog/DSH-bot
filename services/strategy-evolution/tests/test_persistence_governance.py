@@ -37,6 +37,25 @@ def _promote(cid, stage, refs, approval_id=None, version=None):
     })
 
 
+def _stub_gateway_approval(monkeypatch, cid, market="CRYPTO", *,
+                           status="APPROVED", subject_type="strategy_promotion",
+                           subject_id=None, approval_id="appr-1"):
+    """桩掉网关审批账本回查:默认返回绑定 cid 的有效审批。"""
+    import strategy_evolution.main as m
+    monkeypatch.setenv("STRATEGY_EVOLUTION_GATEWAY_URL", "http://gateway.test")
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {
+                "approval_id": approval_id, "status": status,
+                "market": market, "subject_type": subject_type,
+                "subject_id": subject_id if subject_id is not None else cid,
+            }
+
+    monkeypatch.setattr(m.httpx, "get", lambda *a, **k: _Resp())
+
+
 def _drive_to_shadow(cid):
     """DRAFT→BACKTESTED→VALIDATED→PAPER→SHADOW（各阶段补证据）。"""
     steps = [("BACKTESTED", 1), ("VALIDATED", 2), ("PAPER", 2), ("SHADOW", 2)]
@@ -185,6 +204,7 @@ def test_auditor_rejection_fails_closed(monkeypatch):
     cid = client2.post("/v1/candidates", json={
         "market": "CRYPTO", "strategy_id": "momentum",
         "strategy_version": "1.0.0"}).json()["candidate_id"]
+    _stub_gateway_approval(monkeypatch, cid)
     for stage, n in [("BACKTESTED", 1), ("VALIDATED", 2),
                      ("PAPER", 2), ("SHADOW", 2)]:
         assert client2.post(f"/v1/candidates/{cid}/promote", json={
@@ -216,11 +236,13 @@ def test_auditor_pass_allows_promotion(tmp_path, monkeypatch):
                 time.sleep(0.5)
         monkeypatch.setenv("STRATEGY_EVOLUTION_AUDITOR_URL",
                            "http://127.0.0.1:8096")
+        cid_holder = {}
         import importlib
         client2 = client
         cid = client2.post("/v1/candidates", json={
             "market": "CRYPTO", "strategy_id": "momentum",
             "strategy_version": "1.0.0"}).json()["candidate_id"]
+        _stub_gateway_approval(monkeypatch, cid)
         for stage, n in [("BACKTESTED", 1), ("VALIDATED", 2),
                          ("PAPER", 2), ("SHADOW", 2)]:
             assert client2.post(f"/v1/candidates/{cid}/promote", json={
@@ -237,3 +259,59 @@ def test_auditor_pass_allows_promotion(tmp_path, monkeypatch):
         assert applied and "auditor=audit-" in (applied[0]["detail"] or "")
     finally:
         proc.terminate()
+
+
+# ---- 审批回查核验（伪造/错绑/未决审批不得晋级） ----
+
+def test_fake_approval_rejected(monkeypatch):
+    """网关账本查无此审批 → 422,不进入 Auditor。"""
+    import strategy_evolution.main as m
+    monkeypatch.setenv("STRATEGY_EVOLUTION_GATEWAY_URL", "http://gateway.test")
+
+    class _Resp:
+        status_code = 404
+        def json(self):
+            return {"detail": "approval not found"}
+
+    monkeypatch.setattr(m.httpx, "get", lambda *a, **k: _Resp())
+    cid = _make_candidate()
+    _drive_to_shadow(cid)
+    rr = _promote(cid, "APPROVED", _evidence(3), approval_id="appr-fake")
+    assert rr.status_code == 422
+    assert "not found in gateway ledger" in rr.json()["detail"]
+    assert client.get(f"/v1/candidates/{cid}").json()["stage"] == "SHADOW"
+
+
+def test_pending_approval_rejected(monkeypatch):
+    """审批仍是 REQUESTED(未决) → 拒绝。"""
+    cid = _make_candidate()
+    _drive_to_shadow(cid)
+    _stub_gateway_approval(monkeypatch, cid, status="REQUESTED")
+    rr = _promote(cid, "APPROVED", _evidence(3), approval_id="appr-1")
+    assert rr.status_code == 422
+    assert "status=REQUESTED" in rr.json()["detail"]
+
+
+def test_mismatched_subject_approval_rejected(monkeypatch):
+    """审批绑定的是别的候选/别的主体 → 拒绝。"""
+    cid = _make_candidate()
+    _drive_to_shadow(cid)
+    _stub_gateway_approval(monkeypatch, cid, subject_id="cand-someone-else")
+    rr = _promote(cid, "APPROVED", _evidence(3), approval_id="appr-1")
+    assert rr.status_code == 422
+    assert "subject_id" in rr.json()["detail"]
+
+
+def test_gateway_unreachable_fails_closed(monkeypatch):
+    """网关不可达 → 503 失败关闭。"""
+    import strategy_evolution.main as m
+
+    def unreachable(*a, **k):
+        raise m.httpx.ConnectError("down")
+
+    monkeypatch.setenv("STRATEGY_EVOLUTION_GATEWAY_URL", "http://gateway.test")
+    monkeypatch.setattr(m.httpx, "get", unreachable)
+    cid = _make_candidate()
+    _drive_to_shadow(cid)
+    rr = _promote(cid, "APPROVED", _evidence(3), approval_id="appr-1")
+    assert rr.status_code == 503

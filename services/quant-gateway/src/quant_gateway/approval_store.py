@@ -177,12 +177,13 @@ def get_approval(approval_id: str) -> Approval | None:
 def decide_approval(
     approval_id: str, decision: ApprovalStatus, decided_by: str
 ) -> Approval:
-    """仅允许 REQUESTED -> APPROVED / REJECTED，不可翻转已决审批。"""
-    approval = get_approval(approval_id)
-    if approval is None:
-        raise KeyError(approval_id)
-    if approval.status != ApprovalStatus.REQUESTED:
-        raise ValueError(f"approval already decided: {approval.status}")
+    """仅允许 REQUESTED -> APPROVED / REJECTED，不可翻转已决审批。
+
+    决定与消费（claim_order_reservation）一样必须在 BEGIN IMMEDIATE
+    事务内完成，且 UPDATE 带 status='REQUESTED' 守卫：并发双击「批准」
+    时只有一个赢家；已进入 CONSUMING/CONSUMED 的审批不可被改写，
+    否则会抹掉 consumed_key 让审批复活（一次批准放行两笔订单）。
+    """
     if decision not in (ApprovalStatus.APPROVED, ApprovalStatus.REJECTED):
         raise ValueError(f"invalid decision: {decision}")
     now = datetime.now(UTC)
@@ -194,7 +195,40 @@ def decide_approval(
     if decision == ApprovalStatus.APPROVED:
         # 批准给出一段新鲜的有效窗口
         update["expires_at"] = now + APPROVAL_TTL
-    return _save(approval.model_copy(update=update))
+    with storage.locked_conn() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise KeyError(approval_id)
+            approval = _row_to_approval(row)
+            if approval.status != ApprovalStatus.REQUESTED:
+                conn.rollback()
+                raise ValueError(f"approval already decided: {approval.status}")
+            updated = approval.model_copy(update=update)
+            cur = conn.execute(
+                "UPDATE approvals SET status = ?, payload = ? "
+                "WHERE approval_id = ? AND status = 'REQUESTED'",
+                (updated.status.value, updated.model_dump_json(), approval_id),
+            )
+            if cur.rowcount != 1:
+                # 并发赢家已改变状态：拒绝本次决定，不覆盖
+                conn.rollback()
+                raise ValueError(
+                    f"approval state changed concurrently: {approval_id}"
+                )
+            conn.commit()
+            return updated
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
 
 
 def _expired(approval: Approval) -> bool:

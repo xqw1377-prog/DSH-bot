@@ -126,13 +126,15 @@ def check_order(check: OrderRiskCheck) -> dict:
 
     limits: list[str] = []
     critical = False
+    data_unavailable = False
     if check.notional > budget.max_position:
         limits.append(
             f"max_position: notional {check.notional} > {budget.max_position}"
         )
     if check.equity <= 0:
+        # 数据不可用 ≠ 真实风险事件：只拒当单，绝不触发 Kill Switch
         limits.append("equity_unavailable")
-        critical = True
+        data_unavailable = True
     elif check.worst_case_loss > check.equity * budget.max_loss_ratio_per_order:
         limits.append(
             "max_loss_ratio_per_order: "
@@ -144,6 +146,8 @@ def check_order(check: OrderRiskCheck) -> dict:
 
     if not limits:
         severity = "OK"
+    elif data_unavailable and not critical:
+        severity = "DATA_UNAVAILABLE"
     elif critical:
         severity = "CRITICAL"
     else:
@@ -156,3 +160,8 @@ def check_order(check: OrderRiskCheck) -> dict:
         kill_switch=critical,
     )
     return result.model_dump(mode="json")
+
+# Prometheus 指标：infra/observability/prometheus.yml 抓取 /metrics
+from prometheus_client import make_asgi_app  # noqa: E402
+
+app.mount("/metrics", make_asgi_app())

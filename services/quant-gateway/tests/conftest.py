@@ -46,7 +46,20 @@ class FakeAdapter(MarketAdapter):
         return []
 
     def get_account_summary(self) -> list:
-        return []
+        from decimal import Decimal
+
+        from dsh_contracts import AccountSummary
+
+        account = "acc-1" if self.market == Market.A_SHARE else "crypto-paper-1"
+        return [AccountSummary(
+            market=self.market,
+            account_id=account,
+            cash=Decimal("1000000"),
+            equity=Decimal("1200000"),
+            currency="CNY" if self.market == Market.A_SHARE else "USDT",
+            reconciliation_version="v1",
+            as_of=datetime.now(UTC),
+        )]
 
     def get_signals(self) -> list:
         return []

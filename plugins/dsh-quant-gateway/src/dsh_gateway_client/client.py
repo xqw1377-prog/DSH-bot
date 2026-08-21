@@ -122,13 +122,8 @@ class GatewayClient:
     def get_order_status(self, market: Market, order_id: str):
         return self._get(f"/v1/markets/{market.value}/orders/{order_id}")
 
-    def register_risk_snapshot(self, market: Market, snapshot: dict) -> dict:
-        """把预览得到的风险快照注册到网关，供正式提交时查验。"""
-        resp = self._client.post(
-            f"/v1/markets/{market.value}/risk-snapshots", json=snapshot
-        )
-        raise_for_response(resp)
-        return resp.json()
+    # 风险快照没有客户端注册接口：快照由网关在 preview_order 时按权威
+    # 持仓/价格计算并持久化，Bot 不得自报风控事实（详见 services/quant-gateway）。
 
     # ---- 审批 ----
 

@@ -67,7 +67,7 @@ def test_write_scope_still_forbidden_when_read_only(tmp_path, monkeypatch):
         ("/v1/markets/CRYPTO/kill-switch/resume", {}),
         ("/v1/markets/CRYPTO/strategies/s1/pause", {}),
         ("/v1/markets/CRYPTO/strategies/s1/resume", {}),
-        ("/v1/markets/CRYPTO/risk-snapshots", {"account_id": "paper-crypto-001"}),
+        # risk-snapshots 无注册端点：快照只由网关在预览时签发（见 read_only.preview_order）
     )
     with TestClient(app) as client:
         headers = {"X-API-Key": "shadow-write"}

@@ -56,7 +56,19 @@ def preview_order(market: Market, intent: dict):
             status_code=422,
             detail=f"intent market {order_intent.market} does not match path market {market}",
         )
-    return get_adapter(market).preview_order(order_intent.model_dump(mode="json"))
+    preview = get_adapter(market).preview_order(order_intent.model_dump(mode="json"))
+    # 风险快照的唯一签发点：值由适配器按权威持仓/价格计算，网关持久化
+    # 并绑定该订单意图。Bot 不能自报风控事实（无注册端点）。
+    risk = preview.get("risk") if isinstance(preview, dict) else None
+    if isinstance(risk, dict) and risk.get("risk_snapshot_id"):
+        from dsh_contracts import RiskSnapshot
+        from quant_gateway.routers.orders import (
+            register_risk_snapshot,
+            snapshot_binding_digest,
+        )
+        snapshot = RiskSnapshot.model_validate(risk)
+        register_risk_snapshot(snapshot, snapshot_binding_digest(order_intent))
+    return preview
 
 
 @router.get("/markets/{market}/orders/{order_id}")

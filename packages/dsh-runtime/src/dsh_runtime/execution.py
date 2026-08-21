@@ -485,6 +485,7 @@ class TradeExecutionCore:
                 valid_until=datetime.now(UTC) + timedelta(minutes=5),
                 signal_snapshot_id=signal_id,
                 risk_snapshot_id=signal["risk_snapshot_id"],
+                order_type="MARKET",
             ))
         except Exception as exc:
             if _gateway_status(exc) is None:
@@ -551,20 +552,12 @@ class TradeExecutionCore:
 
     def _dispatch_submit(self, session: BotSession, task: dict,
                          intent: OrderIntent) -> None:
+        # 风险快照由网关在 _preview 时按权威持仓/价格签发并持久化
+        # （intent.risk_snapshot_id 即预览返回的快照 ID）；
+        # Bot 不再自报快照，提交时由网关校验归属/绑定/新鲜度。
         signal = task["payload"]
         try:
             session.use("submit_order")
-            self.gateway.register_risk_snapshot(self.market, {
-                "risk_snapshot_id": signal["risk_snapshot_id"],
-                "market": self.market.value,
-                "account_id": self.account_id,
-                "position_before": signal.get("position_before", "0"),
-                "position_after": signal.get("position_after", "0.01"),
-                "risk_budget_delta": signal.get("risk_budget_delta", "0"),
-                "worst_case_loss": signal.get("worst_case_loss", "0"),
-                "limits_hit": [],
-                "as_of": datetime.now(UTC).isoformat(),
-            })
         except Exception as exc:
             if _gateway_status(exc) is None and getattr(exc, "submission_unknown", None) is None:
                 raise
@@ -1080,9 +1073,10 @@ class TradeExecutionCore:
     def _signal_quantity(self, signal: dict) -> str:
         if signal.get("quantity") not in (None, ""):
             return str(signal["quantity"])
-        if self.policy is not None and self.mode == "shadow":
+        if self.policy is not None:
             return str(self.policy.default_quantity(signal))
-        if self.market == Market.A_SHARE and self.mode == "shadow":
+        if self.market == Market.A_SHARE:
+            # A 股缺省数量必须是整手，Paper 同样强制（不允许 0.01 股）
             return "100"
         return "0.01"
 
@@ -1114,10 +1108,23 @@ class TradeExecutionCore:
         limits = risk.get("limits_hit") or []
         if limits:
             return f"风险超限: {', '.join(str(item) for item in limits)}"
-        if self.mode != "shadow":
-            return None
+        # 市场规则（整手/涨跌停/T+1）在 Shadow 与 Paper 同样强制：
+        # Shadow 记录「若执行将被拒绝」，Paper 必须真实拒绝——
+        # Paper 放行 0.01 股或非整手订单等于用假数据训练进化链路。
         quantity = self._signal_quantity(signal)
-        price = signal.get("entry_price") or preview.get("estimated_cost")
+        # validate_order 需要每股价格：estimated_cost 是订单总金额，
+        # 回退时按数量折算，避免把名义价值当单价做涨跌停校验
+        price = signal.get("entry_price")
+        if price in (None, ""):
+            cost = preview.get("estimated_cost")
+            try:
+                qty_dec = Decimal(str(quantity))
+                price = (
+                    str(Decimal(str(cost)) / qty_dec)
+                    if cost not in (None, "") and qty_dec > 0 else cost
+                )
+            except Exception:
+                price = cost
         if self.policy is not None:
             problem = self.policy.validate_order(
                 self.market, quantity, price, signal.get("symbol")
@@ -1466,6 +1473,7 @@ class TradeExecutionCore:
             valid_until=self.now_fn() + timedelta(minutes=10),
             signal_snapshot_id=signal["signal_id"],
             risk_snapshot_id=f"rs-{signal['signal_id']}",
+            order_type="MARKET",
         )
         try:
             preview = self.gateway.preview_order(intent)

@@ -110,3 +110,82 @@ def test_decision_cannot_be_flipped():
 def test_unknown_approval_returns_404():
     client = TestClient(app)
     assert client.get("/v1/approvals/appr-none").status_code == 404
+
+
+def test_concurrent_decide_single_winner():
+    """并发双击「批准」：只有一个决定生效，且不覆盖已消费审批。"""
+    import threading
+
+    from dsh_contracts import ApprovalStatus, Market
+    from quant_gateway import approval_store
+
+    approval = approval_store.create_approval(
+        market=Market.A_SHARE,
+        requested_by_bot="a-stock-bot",
+        subject_type="order",
+        subject_id="sub-race",
+        binding={
+            "market": "A_SHARE", "account_id": "acc-1", "symbol": "600519.SH",
+            "side": "BUY", "quantity": "100",
+        },
+    )
+    results = []
+    lock = threading.Lock()
+
+    def decide():
+        try:
+            updated = approval_store.decide_approval(
+                approval.approval_id, ApprovalStatus.APPROVED, "human"
+            )
+            with lock:
+                results.append(updated.status)
+        except ValueError:
+            with lock:
+                results.append("REJECTED")
+
+    threads = [threading.Thread(target=decide) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results.count(ApprovalStatus.APPROVED) == 1
+    assert results.count("REJECTED") == 7
+    final = approval_store.get_approval(approval.approval_id)
+    assert final.status == ApprovalStatus.APPROVED
+
+
+def test_decide_cannot_resurrect_consumed_approval():
+    """已进入 CONSUMING 的审批不可被 decide 覆盖(防复活双花)。"""
+    from dsh_contracts import ApprovalStatus, Market
+    from quant_gateway import approval_store
+
+    approval = approval_store.create_approval(
+        market=Market.A_SHARE,
+        requested_by_bot="a-stock-bot",
+        subject_type="order",
+        subject_id="sub-consumed",
+        binding={
+            "market": "A_SHARE", "account_id": "acc-1", "symbol": "600519.SH",
+            "side": "BUY", "quantity": "100",
+        },
+    )
+    approval_store.decide_approval(
+        approval.approval_id, ApprovalStatus.APPROVED, "human"
+    )
+    digest = approval_store.compute_intent_digest({
+        "market": "A_SHARE", "account_id": "acc-1", "symbol": "600519.SH",
+        "side": "BUY", "quantity": "100",
+    })
+    status, _ = approval_store.claim_order_reservation(
+        approval.approval_id, digest, "race-key-1", "hash-1"
+    )
+    assert status.value == "OK"
+    import pytest
+    with pytest.raises(ValueError):
+        approval_store.decide_approval(
+            approval.approval_id, ApprovalStatus.APPROVED, "human"
+        )
+    final = approval_store.get_approval(approval.approval_id)
+    assert final.status == ApprovalStatus.CONSUMING
+    assert final.consumed_key == "race-key-1"

@@ -12,6 +12,7 @@ request_order / cancel_order 可改变资金状态，必须满足：
 import hashlib
 import json
 import os
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
@@ -52,6 +53,14 @@ def _idempotency_age_seconds(updated_at: str | None) -> float | None:
 
 RISK_POLICY_URL = os.environ.get("RISK_POLICY_URL", "http://127.0.0.1:8003")
 
+# 风险快照有效期：预览时签发，超龄快照不得用于下单
+RISK_SNAPSHOT_TTL_SECONDS = 600.0
+
+
+def snapshot_now() -> datetime:
+    """新鲜度校验的基准时钟；测试可注入确定性时钟。"""
+    return datetime.now(UTC)
+
 
 def digest_from_intent(intent: OrderIntent) -> str:
     """从订单意图计算绑定摘要，与审批创建时的 binding 摘要比对。"""
@@ -69,6 +78,24 @@ def digest_from_intent(intent: OrderIntent) -> str:
         "signal_snapshot_id": intent.signal_snapshot_id,
         "risk_snapshot_id": intent.risk_snapshot_id,
         "valid_until": intent.valid_until.isoformat(),
+    })
+
+
+def snapshot_binding_digest(intent: OrderIntent) -> str:
+    """快照绑定摘要：不含 valid_until（重预览会刷新时效，但绑定不变）。"""
+    return compute_intent_digest({
+        "market": intent.market.value,
+        "account_id": intent.account_id,
+        "symbol": intent.symbol,
+        "side": intent.side.value,
+        "order_type": intent.order_type,
+        "quantity": str(intent.quantity),
+        "limit_price": (
+            str(intent.limit_price) if intent.limit_price is not None else None
+        ),
+        "strategy_version": intent.strategy_version,
+        "signal_snapshot_id": intent.signal_snapshot_id,
+        "risk_snapshot_id": intent.risk_snapshot_id,
     })
 
 
@@ -173,42 +200,31 @@ def _raise_claim_failure(status: ClaimStatus, message: str) -> None:
         message=message,
     )
 
-def register_risk_snapshot(snapshot: RiskSnapshot) -> None:
-    """注册风险快照（持久化，多 worker 可见）。生产由 risk-policy 写入。"""
-    storage.save_risk_snapshot(
-        snapshot.risk_snapshot_id, snapshot.market.value,
-        snapshot.model_dump(mode="json"),
+def register_risk_snapshot(snapshot: RiskSnapshot,
+                           binding_digest: str | None = None) -> bool:
+    """注册网关签发的风险快照（持久化、不可覆盖）。
+
+    仅两条合法来源：
+    - 订单预览时由适配器按权威持仓/价格计算（见 read_only.preview_order）
+    - 测试直接注入
+    Bot 不得自报风控事实；binding_digest 把快照钉在单一订单意图上。
+    """
+    payload = snapshot.model_dump(mode="json")
+    if binding_digest is not None:
+        payload["binding_digest"] = binding_digest
+    return storage.save_risk_snapshot(
+        snapshot.risk_snapshot_id, snapshot.market.value, payload
     )
 
 
 def _account_equity(adapter, account_id: str):
-    """从适配器取账户权益；取不到返回 0，让 risk-policy 失败关闭。"""
+    """从适配器取账户权益；取不到返回 None（数据不可用，非 0）。"""
     try:
         summaries = adapter.get_account_summary()
         match = next((s for s in summaries if s.account_id == account_id), None)
-        return match.equity if match is not None else 0
+        return match.equity if match is not None else None
     except Exception:
-        return 0
-
-
-@router.post("/markets/{market}/risk-snapshots", status_code=201)
-def register_risk_snapshot_api(market: Market, snapshot: dict,
-                               principal: Principal = Depends(require_write)):
-    require_market_bot_service(principal, market)
-    """注册风险快照。快照来源必须可信（如订单预览的计算结果），
-    提交订单时按 risk_snapshot_id 查验，查不到即失败关闭。"""
-    from pydantic import ValidationError as VE
-    try:
-        parsed = RiskSnapshot.model_validate(snapshot)
-    except VE as exc:
-        raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
-    if parsed.market != market:
-        raise HTTPException(
-            status_code=422,
-            detail=f"snapshot market {parsed.market} does not match path market {market}",
-        )
-    register_risk_snapshot(parsed)
-    return {"risk_snapshot_id": parsed.risk_snapshot_id}
+        return None
 
 
 @router.post("/markets/{market}/orders")
@@ -236,6 +252,22 @@ def request_order(market: Market, intent: dict,
             submission_unknown=False,
             message=(
                 f"intent market {order_intent.market} does not match path market {market}"
+            ),
+        )
+    # 意图时效：过期意图直接拒绝，不进入任何后续门禁
+    try:
+        expired = snapshot_now() > order_intent.valid_until
+    except TypeError:
+        expired = True
+    if expired:
+        raise structured_error(
+            422,
+            error_code="INTENT_EXPIRED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"order intent expired at {order_intent.valid_until.isoformat()}"
             ),
         )
 
@@ -333,8 +365,10 @@ def request_order(market: Market, intent: dict,
                 ),
             )
 
-    # 3. 风险快照（失败关闭：查不到快照即拒绝）
+    # 3. 风险快照（失败关闭）：必须是网关在预览时签发的快照，
+    #    且归属（市场/账户）、绑定摘要、新鲜度全部匹配本订单意图。
     raw = storage.get_risk_snapshot(order_intent.risk_snapshot_id)
+    stored_binding = (raw or {}).pop("binding_digest", None) if raw else None
     snapshot = RiskSnapshot.model_validate(raw) if raw is not None else None
     if snapshot is None:
         raise structured_error(
@@ -343,7 +377,56 @@ def request_order(market: Market, intent: dict,
             phase="PRE_SUBMIT",
             retryable=False,
             submission_unknown=False,
-            message="risk snapshot not found; fail-closed, order rejected",
+            message=(
+                "risk snapshot not found; snapshots are issued by the gateway "
+                "at preview time; fail-closed, order rejected"
+            ),
+        )
+    if snapshot.market != order_intent.market or (
+        snapshot.account_id != order_intent.account_id
+    ):
+        raise structured_error(
+            422,
+            error_code="RISK_SNAPSHOT_MISMATCH",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"risk snapshot belongs to {snapshot.market.value}/"
+                f"{snapshot.account_id}, not this order's "
+                f"{order_intent.market.value}/{order_intent.account_id}"
+            ),
+        )
+    binding_digest = snapshot_binding_digest(order_intent)
+    if stored_binding is not None and stored_binding != binding_digest:
+        raise structured_error(
+            422,
+            error_code="RISK_SNAPSHOT_MISMATCH",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                "risk snapshot was issued for a different order intent; "
+                "snapshots cannot be reused across orders"
+            ),
+        )
+    try:
+        snapshot_age = (
+            snapshot_now() - snapshot.as_of
+        ).total_seconds()
+    except (TypeError, ValueError):
+        snapshot_age = None
+    if snapshot_age is None or snapshot_age > RISK_SNAPSHOT_TTL_SECONDS:
+        raise structured_error(
+            422,
+            error_code="RISK_SNAPSHOT_STALE",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"risk snapshot is stale (age={snapshot_age}s, "
+                f"ttl={RISK_SNAPSHOT_TTL_SECONDS}s); re-preview required"
+            ),
         )
     if snapshot.limits_hit:
         raise structured_error(
@@ -356,6 +439,27 @@ def request_order(market: Market, intent: dict,
         )
 
     # 4. 二次硬风控（失败关闭：risk-policy 不可达或拒绝即拒绝订单）
+    # 权益读不到 = 数据不可用：只拒绝当前订单，绝不当作 CRITICAL 触发 Kill Switch
+    equity = _account_equity(adapter, order_intent.account_id)
+    if equity is None:
+        audit.record(
+            "order.rejected",
+            service_principal=principal.name,
+            market=market.value,
+            subject_id=order_intent.account_id,
+            detail="equity unavailable: DATA_UNAVAILABLE, order rejected only",
+        )
+        raise structured_error(
+            422,
+            error_code="DATA_UNAVAILABLE",
+            phase="PRE_SUBMIT",
+            retryable=True,
+            submission_unknown=False,
+            message=(
+                "account equity unavailable; cannot verify risk for this order; "
+                "order rejected (kill switch not engaged)"
+            ),
+        )
     try:
         check = check_order_risk(
             RISK_POLICY_URL,
@@ -365,7 +469,7 @@ def request_order(market: Market, intent: dict,
             quantity=str(order_intent.quantity),
             notional=str(snapshot.risk_budget_delta),
             worst_case_loss=str(snapshot.worst_case_loss),
-            equity=str(_account_equity(adapter, order_intent.account_id)),
+            equity=str(equity),
         )
     except Exception as exc:  # venue 尚未调用
         raise structured_error(

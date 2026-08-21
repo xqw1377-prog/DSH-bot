@@ -74,9 +74,6 @@ class _Gateway:
             },
         }
 
-    def register_risk_snapshot(self, market, snapshot):
-        return {"ok": True, "risk_snapshot_id": snapshot["risk_snapshot_id"]}
-
     def get_approval(self, approval_id):
         return {
             "approval_id": approval_id,
@@ -202,7 +199,7 @@ def test_execution_chain_writes_approval_order_fill_and_reconcile():
         market=Market.CRYPTO,
         gateway=_Gateway(),
         approvals=_Approvals(),
-        account_id="paper-crypto-001",
+        account_id="crypto-paper-1",
         mode="paper",
         now_fn=lambda: NOW,
     )

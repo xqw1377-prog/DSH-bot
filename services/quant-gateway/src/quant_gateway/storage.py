@@ -156,17 +156,34 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def save_risk_snapshot(snapshot_id: str, market: str, payload: dict) -> None:
+def save_risk_snapshot(snapshot_id: str, market: str, payload: dict,
+                       *, overwrite: bool = False) -> bool:
+    """保存风险快照。
+
+    默认不可变（INSERT-only）：同一 ID 不允许覆盖——快照是风控门禁的
+    权威输入，被覆盖等于改写风控事实。返回是否真正写入。
+    """
     import json
 
     with locked_conn() as conn:
-        conn.execute(
-            """INSERT INTO risk_snapshots (risk_snapshot_id, market, payload)
-               VALUES (?, ?, ?)
-               ON CONFLICT(risk_snapshot_id) DO UPDATE SET payload = excluded.payload""",
-            (snapshot_id, market, json.dumps(payload, ensure_ascii=False)),
-        )
+        if overwrite:
+            conn.execute(
+                """INSERT INTO risk_snapshots (risk_snapshot_id, market, payload)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(risk_snapshot_id) DO UPDATE SET payload = excluded.payload""",
+                (snapshot_id, market, json.dumps(payload, ensure_ascii=False)),
+            )
+            written = True
+        else:
+            cur = conn.execute(
+                """INSERT INTO risk_snapshots (risk_snapshot_id, market, payload)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(risk_snapshot_id) DO NOTHING""",
+                (snapshot_id, market, json.dumps(payload, ensure_ascii=False)),
+            )
+            written = cur.rowcount > 0
         conn.commit()
+        return written
 
 
 def get_risk_snapshot(snapshot_id: str) -> dict | None:

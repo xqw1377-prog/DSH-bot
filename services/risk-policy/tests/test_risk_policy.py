@@ -50,11 +50,12 @@ def test_loss_ratio_over_limit_fails():
 
 
 def test_missing_equity_fails_closed():
+    # 数据不可用 ≠ 真实风险事件：失败关闭拒单，但不触发 Kill Switch
     result = _check(equity="0")
     assert result["passed"] is False
     assert "equity_unavailable" in result["limits_hit"]
-    assert result["severity"] == "CRITICAL"
-    assert result["kill_switch"] is True
+    assert result["severity"] == "DATA_UNAVAILABLE"
+    assert result["kill_switch"] is False
 
 
 def test_max_position_is_high_not_kill_switch():

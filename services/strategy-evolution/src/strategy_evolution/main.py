@@ -31,6 +31,81 @@ from strategy_evolution.state_machine import PromotionError, promote
 def _auditor_url() -> str:
     """调用时读取：测试与运维可动态切换，避免模块级状态残留。"""
     return os.environ.get("STRATEGY_EVOLUTION_AUDITOR_URL", "")
+
+
+def _gateway_url() -> str:
+    return os.environ.get("STRATEGY_EVOLUTION_GATEWAY_URL", "")
+
+
+def _gateway_api_key() -> str:
+    return os.environ.get("STRATEGY_EVOLUTION_GATEWAY_API_KEY", "")
+
+
+def _verify_approval_with_gateway(candidate: StrategyCandidate,
+                                  req: "PromotionRequest") -> None:
+    """回查 Quant Gateway 审批账本，核验人工审批真实有效。
+
+    状态机只看 approval_id 非空是不够的——任意字符串都能伪造。
+    晋级到 APPROVED/CANARY/PRODUCTION 必须满足：
+    - 审批在网关账本中真实存在
+    - 状态为 APPROVED（未过期/未消费/未被拒绝）
+    - subject_type = strategy_promotion 且 subject 绑定本候选
+    - 市场与候选一致
+    网关不可达或未配置 = 失败关闭，绝不猜测放行。
+    """
+    base = _gateway_url()
+    if not base:
+        raise HTTPException(
+            status_code=503,
+            detail=("quant gateway not configured "
+                    "(STRATEGY_EVOLUTION_GATEWAY_URL); "
+                    "cannot verify approval; fail-closed"),
+        )
+    headers = (
+        {"X-API-Key": _gateway_api_key()} if _gateway_api_key() else None
+    )
+    try:
+        resp = httpx.get(
+            f"{base.rstrip('/')}/v1/approvals/{req.approval_id}",
+            headers=headers, timeout=5.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"quant gateway unreachable; cannot verify approval: {exc}",
+        ) from exc
+    if resp.status_code == 404:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"approval {req.approval_id} not found in gateway ledger; "
+                    "promotion rejected"),
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=503,
+            detail=(f"quant gateway returned {resp.status_code}; "
+                    "cannot verify approval; fail-closed"),
+        )
+    approval = resp.json()
+    problems = []
+    if approval.get("status") != "APPROVED":
+        problems.append(f"status={approval.get('status')}")
+    if approval.get("subject_type") != "strategy_promotion":
+        problems.append(f"subject_type={approval.get('subject_type')}")
+    if approval.get("subject_id") != candidate.candidate_id:
+        problems.append(
+            f"subject_id={approval.get('subject_id')} != {candidate.candidate_id}"
+        )
+    if approval.get("market") != candidate.market.value:
+        problems.append(
+            f"market={approval.get('market')} != {candidate.market.value}"
+        )
+    if problems:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"approval {req.approval_id} failed verification "
+                    f"({'; '.join(problems)}); promotion rejected"),
+        )
 # Auditor 属于更强门禁：晋级到这些阶段必须通过独立审计
 _STAGES_REQUIRING_AUDITOR = {
     StrategyStage.APPROVED, StrategyStage.CANARY, StrategyStage.PRODUCTION,
@@ -182,14 +257,23 @@ def promote_candidate(candidate_id: str, req: PromotionRequest) -> dict:
                     "not match append-only evidence ledger; fail-closed"),
         )
 
-    # 3. 独立风控审计（失败关闭：不可达/超时/驳回均拒绝晋级）
+    # 3. 人工审批回查：approval_id 必须在网关账本中真实有效且绑定本候选
+    if req.target_stage in _STAGES_REQUIRING_AUDITOR:
+        if not req.approval_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"human approval_id is required for {req.target_stage.value}",
+            )
+        _verify_approval_with_gateway(candidate, req)
+
+    # 4. 独立风控审计（失败关闭：不可达/超时/驳回均拒绝晋级）
     auditor_ref = None
     if req.target_stage in _STAGES_REQUIRING_AUDITOR:
         verdict = _audit_with_risk_auditor(
             candidate, req, new_hash)
         auditor_ref = verdict["conclusion_id"]
 
-    # 4. 状态机门禁（证据数、审批 ID、单步推进）
+    # 5. 状态机门禁（证据数、审批 ID、单步推进）
     try:
         updated = promote(
             candidate, req.target_stage, req.evidence_refs, req.approval_id
@@ -202,7 +286,7 @@ def promote_candidate(candidate_id: str, req: PromotionRequest) -> dict:
                       detail=str(exc))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # 5. 乐观锁落库 + 证据与审计 append
+    # 6. 乐观锁落库 + 证据与审计 append
     # promote() 已把新证据并入 updated.evidence_refs；哈希另存 payload
     if req.expected_version is not None and req.expected_version != current_version:
         raise HTTPException(
@@ -304,3 +388,8 @@ app.include_router(v1)
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "strategy-evolution"}
+
+# Prometheus 指标：infra/observability/prometheus.yml 抓取 /metrics
+from prometheus_client import make_asgi_app  # noqa: E402
+
+app.mount("/metrics", make_asgi_app())
