@@ -1,4 +1,3 @@
-from pathlib import Path
 
 import httpx
 import pytest
@@ -83,6 +82,35 @@ def test_incomplete_document_cannot_become_event():
     )
     assert stub.eligible_for_impact() is False
     assert extract_event(stub) is None
+
+
+def test_listing_title_is_first_hand_evidence():
+    """列表页标题即存证原文：政策标题 ≥16 字可评分；标题为空的条目仍拒。"""
+    doc = make_document(
+        source_id="pbc-news", source_tier="PRIMARY",
+        canonical_url="https://example.gov.cn/pbc/1",
+        published_at="2026-08-21T00:00:00+00:00",
+        raw_text="央行今日开展1200亿元逆回购操作",
+        assets=[], collection_method="HTML_INCREMENTAL",
+        title="央行今日开展1200亿元逆回购操作",
+        market="A_SHARE",
+    )
+    assert doc.eligible_for_impact()
+    event = extract_event(doc)
+    assert event["event_type"] == "MONETARY_POLICY"
+    # 标题无方向关键词 → 不编方向
+    assert event["direction"] == "UNCERTAIN"
+    # 标题为空的列表页条目不能评分
+    empty_title = make_document(
+        source_id="pbc-news", source_tier="PRIMARY",
+        canonical_url="https://example.gov.cn/pbc/2",
+        published_at="2026-08-21T00:00:00+00:00",
+        raw_text="央行今日开展1200亿元逆回购操作",
+        assets=[], collection_method="HTML_INCREMENTAL",
+        title="",
+        market="A_SHARE",
+    )
+    assert empty_title.eligible_for_impact() is False
 
 
 def test_sec_form4_and_nasdaq_halt_extract():

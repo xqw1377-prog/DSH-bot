@@ -116,7 +116,6 @@ def test_concurrent_decide_single_winner():
     """并发双击「批准」：只有一个决定生效，且不覆盖已消费审批。"""
     import threading
 
-    from dsh_contracts import ApprovalStatus, Market
     from quant_gateway import approval_store
 
     approval = approval_store.create_approval(
@@ -157,7 +156,6 @@ def test_concurrent_decide_single_winner():
 
 def test_decide_cannot_resurrect_consumed_approval():
     """已进入 CONSUMING 的审批不可被 decide 覆盖(防复活双花)。"""
-    from dsh_contracts import ApprovalStatus, Market
     from quant_gateway import approval_store
 
     approval = approval_store.create_approval(

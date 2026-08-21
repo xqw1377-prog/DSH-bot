@@ -32,7 +32,6 @@ plugins/
   dsh-risk-auditor/     # 独立风控验证 HTTP
   dsh-quant-gateway/    # Gateway 客户端
   dsh-trade-approval/   # 交易审批
-  dsh-trade-core/       # 市场策略注入（时段/整手等）
   # 未审计插件不进 CI：dsh-strategy-lab
 services/
   quant-gateway/        # 统一协议、身份、授权、幂等、二次硬风控（FastAPI）

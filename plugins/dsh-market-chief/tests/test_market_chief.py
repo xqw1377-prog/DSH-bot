@@ -14,7 +14,7 @@ from dsh_contracts import (
     AccountSummary, HealthStatus, Market, OrderPreview, RiskSnapshot, Signal,
 )
 from dsh_gateway_client import GatewayClient
-from dsh_runtime import BotSession, Profile, load_profile, reset, run_once
+from dsh_runtime import BotSession, load_profile, reset, run_once
 from dsh_trade_approval import ApprovalWorkflow
 from quant_gateway.adapters import MarketAdapter, register_adapter
 from quant_gateway.main import app
@@ -285,10 +285,8 @@ def test_chief_health_queries_are_read_only():
 
 def test_chief_forwards_incidents_with_dedupe(monkeypatch):
     """Chief 转发事故到 Incident Center：幂等去重，中心不可达不影响汇总。"""
-    import os
 
     from dsh_runtime import BotSession as BS, Profile as PF, reset
-    from fastapi import FastAPI
     from fastapi.testclient import TestClient as TC
 
     reset()
@@ -345,7 +343,6 @@ def test_chief_forwards_incidents_with_dedupe(monkeypatch):
 
 def test_chief_forward_failure_does_not_break_summary(monkeypatch):
     """Incident Center 不可达：Chief 记录错误记忆，汇总照常输出。"""
-    import os
 
     class Unreachable:
         def post(self, *a, **k):

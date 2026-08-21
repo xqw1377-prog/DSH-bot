@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -180,7 +178,6 @@ def test_pipeline_records_health_and_recovery(tmp_path, monkeypatch):
 def test_source_health_endpoint():
     from fastapi.testclient import TestClient
     from intelligence_ingest.main import app
-    from intelligence_ingest.store import IntelligenceStore
 
     client = TestClient(app)
     resp = client.get("/v1/source-health")

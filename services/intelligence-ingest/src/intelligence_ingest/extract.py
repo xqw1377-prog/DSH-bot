@@ -61,6 +61,20 @@ def infer_direction(text: str) -> str:
     return "UNCERTAIN"
 
 
+def event_cluster_key(title: str, event_type: str, assets: list) -> str:
+    """跨源同事件归并键:规范化标题 + 事件类型 + 主资产。
+
+    只归并「规范化后完全相同标题」的转载/通稿——不同标题不强行合并,
+    宁可重复观察也不误并(与方向推断同一保守原则)。
+    """
+    import re
+
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", (title or "").lower())
+    primary = sorted(str(a) for a in assets)[0] if assets else ""
+    return "clu-" + sha256(
+        f"{event_type}|{primary}|{normalized}".encode()).hexdigest()[:16]
+
+
 def extract_event(doc: Document) -> dict[str, Any] | None:
     if not doc.eligible_for_impact():
         return None
@@ -77,6 +91,7 @@ def extract_event(doc: Document) -> dict[str, Any] | None:
     direction = infer_direction(text)
     return {
         "event_id": f"evt-{digest}",
+        "cluster_key": event_cluster_key(doc.title, event_type, doc.assets),
         "document_id": doc.document_id,
         "event_type": event_type,
         "affected_assets": list(doc.assets),

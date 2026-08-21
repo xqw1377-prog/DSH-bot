@@ -11,7 +11,7 @@
 结论按（candidate, to_stage, evidence_hash）幂等：重复请求返回同一结论。
 """
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 from risk_auditor import storage
@@ -97,7 +97,7 @@ def conclusions(candidate_id: str) -> list[dict]:
             " WHERE candidate_id = ?", (candidate_id,)).fetchall()
     keys = ("conclusion_id", "to_stage", "evidence_hash", "verdict",
             "reason", "strategy_version", "created_at")
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(keys, r, strict=False)) for r in rows]
 
 
 @app.get("/healthz")

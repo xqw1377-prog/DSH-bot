@@ -211,7 +211,7 @@ def _get_incident(conn, incident_id: str) -> dict:
         " WHERE incident_id = ?", (incident_id,)).fetchone()
     keys = ("incident_id", "source", "market", "incident_type", "severity",
             "reason", "status", "occurrences", "opened_at", "updated_at")
-    return dict(zip(keys, row))
+    return dict(zip(keys, row, strict=False))
 
 
 @app.get("/v1/incidents", dependencies=[Depends(require_service_key)])
@@ -221,9 +221,11 @@ def list_incidents(status: str | None = None,
         sql = "SELECT incident_id FROM incidents"
         conds, params = [], []
         if status:
-            conds.append("status = ?"); params.append(status)
+            conds.append("status = ?")
+            params.append(status)
         if market:
-            conds.append("market = ?"); params.append(market)
+            conds.append("market = ?")
+            params.append(market)
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         rows = conn.execute(sql, *([params] if params else [])).fetchall()
@@ -238,7 +240,7 @@ def get_incident(incident_id: str) -> dict:
         try:
             return _get_incident(conn, incident_id)
         except Exception:
-            raise HTTPException(status_code=404, detail="incident not found")
+            raise HTTPException(status_code=404, detail="incident not found") from None
 
 
 @app.post("/v1/incidents/{incident_id}/mitigate", dependencies=[Depends(require_service_key)])
@@ -258,7 +260,7 @@ def _transition(incident_id: str, target: str, req: IncidentAction) -> dict:
             current = _get_incident(conn, incident_id)["status"]
         except Exception:
             conn.rollback()
-            raise HTTPException(status_code=404, detail="incident not found")
+            raise HTTPException(status_code=404, detail="incident not found") from None
         if target not in _TRANSITIONS[current]:
             conn.rollback()
             raise HTTPException(
@@ -281,7 +283,7 @@ def timeline(incident_id: str) -> list[dict]:
             " WHERE incident_id = ? ORDER BY occurred_at", (incident_id,),
         ).fetchall()
     keys = ("entry_id", "occurred_at", "action", "actor", "detail")
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(keys, r, strict=False)) for r in rows]
 
 
 @app.get("/healthz")

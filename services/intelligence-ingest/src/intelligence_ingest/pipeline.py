@@ -73,7 +73,7 @@ def ingest_once(
             last_attempt = (health or {}).get("last_attempt_at")
             if last_attempt:
                 try:
-                    from datetime import datetime, timezone
+                    from datetime import datetime
                     from intelligence_ingest.documents import utc_now as _now
                     prev = datetime.fromisoformat(str(last_attempt).replace("Z", "+00:00"))
                     cur = datetime.fromisoformat(_now().replace("Z", "+00:00"))
@@ -114,6 +114,9 @@ def ingest_once(
                 f"{source.id}: recovered after "
                 f"{after.get('consecutive_failures', 0)} failure(s); catch-up fetch done"
             )
+    # 24h 采集增长控制:顺路触发 TTL 清理(时间戳守卫,至多每天一次)
+    from intelligence_ingest.store import maybe_prune
+    maybe_prune(db)
     dest = _snapshot_path(snapshot_dir)
     snapshot = db.export_snapshot(dest) if dest else None
     return {

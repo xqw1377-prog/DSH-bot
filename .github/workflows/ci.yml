@@ -19,6 +19,14 @@ jobs:
           pip install $PKGS pytest
       - name: Schema compatibility check
         run: python scripts/check_schemas.py
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check services packages plugins scripts
+      - name: Type check (mypy, contracts first)
+        run: |
+          pip install mypy
+          mypy
       - name: Tests
         run: pytest services/ plugins/ packages/ -q --tb=short -ra --import-mode=importlib
 

@@ -1,0 +1,21 @@
+# Python lint 基线(首批):E/W/F 核心规则。
+# scripts/* 的 E402 是 sys.path 引导的既定模式,豁免。
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E", "W", "F", "B", "UP"]
+ignore = [
+    "E501",  # 行长由 line-length 兜底,ruff format 负责精确控制
+    "B008",  # FastAPI Depends() 默认参数是框架惯例
+    "UP015", # 显式 open(..., "r") 可读性更好
+]
+
+[lint.per-file-ignores]
+"scripts/*" = ["E402"]           # sys.path 引导后才能导入本地包
+"**/tests/*" = ["B011"]          # assert False 在测试里合法
+"services/*/src/*/main.py" = ["E402"]  # 部分服务 main 尾部挂 /metrics
+"conftest.py" = ["E402"]
+
+[format]
+quote-style = "double"

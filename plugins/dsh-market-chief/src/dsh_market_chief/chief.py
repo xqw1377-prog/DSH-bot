@@ -14,7 +14,7 @@ import os
 
 import httpx
 from dsh_contracts import Market
-from dsh_gateway_client import GatewayClient, GatewayError
+from dsh_gateway_client import GatewayClient
 from dsh_runtime import BotSession
 from dsh_runtime.store import _get as _runtime_conn
 
@@ -162,7 +162,7 @@ class MarketChiefAgent:
             ).fetchall()
         except Exception:
             return bots  # 账本不可读：返回空汇总，不猜测
-        for event_type, actor_id, occurred_at in rows:
+        for event_type, actor_id, _occurred_at in rows:
             if actor_id in ("market-chief", "system", ""):
                 continue
             entry = bots.setdefault(actor_id, {"tick_failed_recent": 0})
@@ -179,7 +179,7 @@ class MarketChiefAgent:
             bots.setdefault(bot, {})["tasks"] = (
                 bots.setdefault(bot, {}).get("tasks", {}))
             bots[bot]["tasks"][status] = count
-        for bot, entry in bots.items():
+        for _bot, entry in bots.items():
             if entry.get("tick_failed_recent", 0) > 0:
                 entry["health"] = "degraded"
             else:

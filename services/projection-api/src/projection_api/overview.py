@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, time
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 from zoneinfo import ZoneInfo
 
 import httpx

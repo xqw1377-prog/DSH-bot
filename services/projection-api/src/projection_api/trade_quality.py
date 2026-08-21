@@ -223,7 +223,7 @@ def _score_exit(trades: list[dict]) -> dict:
     top_text = "；".join(f"{name} {count}" for name, count in top)
     score = int(100 * wins / len(trades))
     notes = [
-        f"已用 6celue 闭环成交的退出原因，仍不能做 MFE/MAE。",
+        "已用 6celue 闭环成交的退出原因，仍不能做 MFE/MAE。",
         f"常见退出：{top_text}。" if top_text else "退出原因缺失。",
     ]
     return {"score": score, "available": True, "note": notes[0], "notes": notes}

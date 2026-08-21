@@ -16,7 +16,7 @@ from dsh_contracts import (
     HealthStatus, Market, OrderPreview, RiskSnapshot, Signal,
 )
 from dsh_gateway_client import GatewayClient
-from dsh_runtime import BotSession, Profile, load_profile, run_once
+from dsh_runtime import BotSession, load_profile, run_once
 from dsh_trade_approval import ApprovalWorkflow
 from quant_gateway.adapters import MarketAdapter, register_adapter
 from quant_gateway.main import app
@@ -197,7 +197,6 @@ def test_weak_signal_skips_approval():
 
 
 def _approve(approval_id: str):
-    from dsh_contracts import ApprovalStatus
     resp = client.post(
         f"/v1/approvals/{approval_id}/decide",
         json={"decision": "APPROVED", "decided_by": "alice"},

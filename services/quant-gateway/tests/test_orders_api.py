@@ -3,7 +3,6 @@ from decimal import Decimal
 
 import pytest
 from dsh_contracts import (
-    AccountSummary,
     Approval,
     ApprovalStatus,
     Market,
@@ -570,7 +569,6 @@ def test_approval_consume_release_state_machine(client, risk_pass):
 # ---- P1: 拒绝路径审计 / venue 拒单释放 / STRONG 恢复 ----
 
 def _audit_rows(action: str) -> list:
-    from quant_gateway import audit as audit_mod
     from quant_gateway import storage as gw_storage
     with gw_storage.locked_conn() as conn:
         rows = conn.execute(
@@ -578,7 +576,7 @@ def _audit_rows(action: str) -> list:
             "WHERE action = ? ORDER BY occurred_at", (action,)
         ).fetchall()
     keys = ("action", "market", "subject_id", "outcome", "detail")
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(keys, r, strict=False)) for r in rows]
 
 
 def _patch_venue_reject(monkeypatch):
@@ -644,7 +642,6 @@ def test_venue_reject_releases_key_and_approval(client, risk_pass, monkeypatch):
 
 def test_venue_reject_then_same_intent_can_retry(client, risk_pass, monkeypatch):
     """释放后:同一意图+新审批可重试成功。"""
-    from quant_gateway import storage as gw_storage
     register_risk_snapshot(make_snapshot())
     first_approval = approved_approval()
     body = make_intent(idempotency_key="retry-1", approval_id=first_approval)

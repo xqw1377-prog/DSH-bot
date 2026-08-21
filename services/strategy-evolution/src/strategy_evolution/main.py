@@ -15,7 +15,6 @@
   （STRATEGY_EVOLUTION_AUDITOR_URL），不可达/超时/驳回一律失败关闭
 """
 
-import hashlib
 import os
 from datetime import UTC, datetime
 from uuid import uuid4

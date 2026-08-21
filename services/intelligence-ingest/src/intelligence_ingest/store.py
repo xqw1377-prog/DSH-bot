@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from intelligence_ingest.documents import Document
+from intelligence_ingest.documents import Document, utc_now
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -217,6 +217,59 @@ class IntelligenceStore:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(dest)
         return payload
+
+
+def _doc_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    try:
+        data["assets"] = json.loads(data.get("assets") or "[]")
+    except json.JSONDecodeError:
+        data["assets"] = []
+    return data
+
+
+# TTL:24h 采集下增长最快的两张表。原文存证是验收要求,窗口放宽到 180 天。
+TTL_DAYS = 180
+_last_prune_at: str | None = None
+
+
+def prune_expired(store: IntelligenceStore, now: str | None = None,
+                  *, ttl_days: int = TTL_DAYS) -> dict[str, int]:
+    """按 TTL 清理文档与事件,返回删除数。事件先于文档(引用完整性)。"""
+    from datetime import datetime, timedelta
+
+    current = datetime.fromisoformat((now or utc_now()).replace("Z", "+00:00"))
+    cutoff = (current - timedelta(days=ttl_days)).isoformat()
+    removed: dict[str, int] = {}
+    cur = store._conn.execute(
+        "DELETE FROM events WHERE document_id IN "
+        "(SELECT document_id FROM documents WHERE fetched_at < ?)", (cutoff,))
+    removed["events"] = cur.rowcount
+    cur = store._conn.execute("DELETE FROM documents WHERE fetched_at < ?", (cutoff,))
+    removed["documents"] = cur.rowcount
+    store._conn.commit()
+    return removed
+
+
+def maybe_prune(store: IntelligenceStore, now: str | None = None) -> None:
+    """至多每 24h 清理一次;ingest_once 顺手调用。"""
+    global _last_prune_at
+    from datetime import datetime, timedelta
+
+    current = now or utc_now()
+    if _last_prune_at is not None:
+        try:
+            prev = datetime.fromisoformat(_last_prune_at.replace("Z", "+00:00"))
+            if (datetime.fromisoformat(current.replace("Z", "+00:00"))
+                    - prev) < timedelta(hours=24):
+                return
+        except ValueError:
+            pass
+    _last_prune_at = current
+    try:
+        prune_expired(store, now=current)
+    except Exception:
+        _last_prune_at = None
 
 
 def _doc_row(row: sqlite3.Row) -> dict[str, Any]:

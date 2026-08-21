@@ -91,7 +91,7 @@ class ExecutionAdapter(MarketAdapter):
             intent=intent, estimated_cost=notional,
             estimated_slippage=Decimal("0.0005"),
             risk=RiskSnapshot(
-                risk_snapshot_id=f"rs-sig-x", market=self.market,
+                risk_snapshot_id="rs-sig-x", market=self.market,
                 account_id="crypto-paper-1",
                 position_before=Decimal("0"), position_after=qty,
                 risk_budget_delta=notional,
@@ -342,9 +342,8 @@ def test_crash_after_submit_recovers_without_resubmission():
         session.tasks.find_by_status("APPROVED_SUBMITTING") else \
         session.tasks.find_by_status("AWAITING_APPROVAL")[0]
     # 手工向网关注册幂等键，代表“订单已提交成功但任务未更新”
-    from quant_gateway import storage
     import hashlib
-    request_hash = hashlib.sha256(json.dumps(
+    _request_hash =  hashlib.sha256(json.dumps(
         {"key": task["idempotency_key"]}, sort_keys=True).encode()).hexdigest()
     # 先真实提交一笔（经网关），再清空任务状态模拟崩溃
     run_once(session, agent)
@@ -464,7 +463,7 @@ def test_agent_submit_crash_recovers_via_idempotency_lookup():
     real_request = ADAPTER.request_order
 
     def crash_after_accept(intent):
-        result = real_request(intent)
+        _result =  real_request(intent)
         raise RuntimeError("gateway crashed after venue accept")
 
     ADAPTER.request_order = crash_after_accept

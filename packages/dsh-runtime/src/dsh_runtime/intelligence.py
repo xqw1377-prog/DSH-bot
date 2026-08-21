@@ -559,9 +559,17 @@ class BotIntelligenceJob:
         action = str(raw.get("action") or _action(direction, held=held, confidence=confidence))
         source_url = str(raw.get("url") or raw.get("source_url") or spec.url or "")
         published_at = str(raw.get("published_at") or raw.get("ts") or "")
-        dedupe_key = hashlib.sha256(
-            f"{spec.source_id}|{symbol}|{title}|{source_url}|{published_at}".encode("utf-8")
-        ).hexdigest()
+        # 跨源归并:同 cluster_key(转载/通稿)只形成一条决策;
+        # 无 cluster 的外部源退回逐源去重。
+        cluster_key = str(raw.get("cluster_key") or "")
+        if cluster_key:
+            dedupe_key = hashlib.sha256(
+                f"cluster|{cluster_key}|{self.market}".encode()
+            ).hexdigest()
+        else:
+            dedupe_key = hashlib.sha256(
+                f"{spec.source_id}|{symbol}|{title}|{source_url}|{published_at}".encode()
+            ).hexdigest()
         payload = {
             "title": title,
             "summary": raw.get("summary") or raw.get("body") or "",

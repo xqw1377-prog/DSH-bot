@@ -151,7 +151,6 @@ def _to_approved(cid):
 def test_auditor_unreachable_fails_closed(monkeypatch):
     monkeypatch.setenv("STRATEGY_EVOLUTION_AUDITOR_URL",
                        "http://127.0.0.1:1")  # 不可达端口
-    import importlib
     client2 = client  # Auditor URL 调用时读取，无需重载模块
     resp = client2.post("/v1/candidates", json={
         "market": "CRYPTO", "strategy_id": "momentum",
@@ -174,7 +173,6 @@ def test_auditor_unreachable_fails_closed(monkeypatch):
 def test_auditor_rejection_fails_closed(monkeypatch):
     """Auditor 明确驳回（证据不足）→ 422 拒绝晋级。"""
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient as TC
 
     fake = FastAPI()
 
@@ -183,7 +181,8 @@ def test_auditor_rejection_fails_closed(monkeypatch):
         return {"verdict": "FAIL", "reason": "insufficient independent evidence",
                 "conclusion_id": "audit-x"}
 
-    import threading, uvicorn
+    import threading
+    import uvicorn
     server = uvicorn.Server(uvicorn.Config(fake, host="127.0.0.1", port=8095,
                                            log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -199,7 +198,6 @@ def test_auditor_rejection_fails_closed(monkeypatch):
 
     monkeypatch.setenv("STRATEGY_EVOLUTION_AUDITOR_URL",
                        "http://127.0.0.1:8095")
-    import importlib
     client2 = client  # Auditor URL 调用时读取，无需重载模块
     cid = client2.post("/v1/candidates", json={
         "market": "CRYPTO", "strategy_id": "momentum",
@@ -220,7 +218,11 @@ def test_auditor_rejection_fails_closed(monkeypatch):
 
 def test_auditor_pass_allows_promotion(tmp_path, monkeypatch):
     """Auditor 通过 → 晋级成功，结论 ID 进审计历史。"""
-    import subprocess, sys, time, httpx, os
+    import subprocess
+    import sys
+    import time
+    import httpx
+    import os
     db = tmp_path / "auditor.db"
     env = dict(os.environ, RISK_AUDITOR_DB=str(db))
     proc = subprocess.Popen(
@@ -236,8 +238,6 @@ def test_auditor_pass_allows_promotion(tmp_path, monkeypatch):
                 time.sleep(0.5)
         monkeypatch.setenv("STRATEGY_EVOLUTION_AUDITOR_URL",
                            "http://127.0.0.1:8096")
-        cid_holder = {}
-        import importlib
         client2 = client
         cid = client2.post("/v1/candidates", json={
             "market": "CRYPTO", "strategy_id": "momentum",

@@ -1,6 +1,5 @@
 """A 股复用 Crypto 异常矩阵：404、拒单、部分成交、UNKNOWN、重启、对账、Shadow。"""
 
-import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path

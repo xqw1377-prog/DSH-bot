@@ -235,6 +235,60 @@ def find_paper_order_by_idempotency_key(key: str) -> dict | None:
     return None
 
 
+# TTL:各表保留窗口。审计日志是审计权威,永不清理(归档另议)。
+TTL_IDEMPOTENCY_KEY_DAYS = 7       # 已完结(FINISHED)与已失败键
+TTL_RISK_SNAPSHOT_HOURS = 25       # 快照有效期 600s,留足余量
+TTL_TERMINAL_APPROVAL_DAYS = 30    # EXPIRED/REJECTED 终态审批
+
+_last_prune_at: datetime | None = None
+_PRUNE_INTERVAL = timedelta(hours=1)
+
+
+def prune_expired(now: datetime | None = None) -> dict[str, int]:
+    """按 TTL 清理已完成使命的行,返回各表删除数。
+
+    - 幂等键:FINISHED/FAILED 且超窗(在途键绝不动)
+    - 风险快照:超窗(不可变签发物,过期即无价值)
+    - 审批:EXPIRED/REJECTED 终态且超窗(APPROVED/CONSUMING 绝不动)
+    - 审计日志:不清理
+    """
+    current = now or datetime.now(UTC)
+    idem_cutoff = (current - timedelta(days=TTL_IDEMPOTENCY_KEY_DAYS)).isoformat()
+    snap_cutoff = (current - timedelta(hours=TTL_RISK_SNAPSHOT_HOURS)).isoformat()
+    appr_cutoff = (current - timedelta(days=TTL_TERMINAL_APPROVAL_DAYS)).isoformat()
+    removed: dict[str, int] = {}
+    with locked_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM idempotency_keys WHERE status IN ('FINISHED','FAILED')"
+            " AND updated_at < ?", (idem_cutoff,))
+        removed["idempotency_keys"] = cur.rowcount
+        cur = conn.execute(
+            "DELETE FROM risk_snapshots WHERE rowid IN ("
+            "  SELECT rowid FROM risk_snapshots"
+            "  WHERE json_extract(payload, '$.as_of') < ?)", (snap_cutoff,))
+        removed["risk_snapshots"] = cur.rowcount
+        cur = conn.execute(
+            "DELETE FROM approvals WHERE status IN ('EXPIRED','REJECTED')"
+            " AND requested_at < ?", (appr_cutoff,))
+        removed["approvals_terminal"] = cur.rowcount
+        conn.commit()
+    return removed
+
+
+def maybe_prune(now: datetime | None = None) -> None:
+    """时间戳守卫:至多每小时清理一次,写路径顺手调用,开销可忽略。"""
+    global _last_prune_at
+    current = now or datetime.now(UTC)
+    if _last_prune_at is not None and current - _last_prune_at < _PRUNE_INTERVAL:
+        return
+    _last_prune_at = current
+    try:
+        prune_expired(now=current)
+    except Exception:
+        # 清理失败不阻断交易路径;下一窗口重试
+        _last_prune_at = None
+
+
 def reset() -> None:
     """测试辅助：丢弃内存连接，恢复干净状态。"""
     global _conn

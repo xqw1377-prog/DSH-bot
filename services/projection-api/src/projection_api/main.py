@@ -51,7 +51,7 @@ async def _proxy_get(base_url: str, path: str, params: dict | None = None):
                 f"{base_url}{path}", params=params, headers=headers or None
             )
         except httpx.RequestError as exc:
-            raise HTTPException(status_code=503, detail=f"upstream unreachable: {exc}")
+            raise HTTPException(status_code=503, detail=f"upstream unreachable: {exc}") from exc
     if resp.is_error:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
@@ -535,7 +535,7 @@ def get_today(_auth: None = Depends(require_projection_read)):
         return resp.json() if resp.is_success else None
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        fetched = dict(zip(paths, pool.map(_get, paths)))
+        fetched = dict(zip(paths, pool.map(_get, paths), strict=False))
     return build_today(
         crypto_health=fetched[paths[0]] if isinstance(fetched[paths[0]], dict) else None,
         ashare_health=fetched[paths[1]] if isinstance(fetched[paths[1]], dict) else None,

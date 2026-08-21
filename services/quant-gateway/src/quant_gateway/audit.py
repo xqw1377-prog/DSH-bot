@@ -75,4 +75,4 @@ def list_audit(limit: int = 100, actor: str | None = None):
         "outcome",
         "detail",
     )
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(keys, r, strict=False)) for r in rows]

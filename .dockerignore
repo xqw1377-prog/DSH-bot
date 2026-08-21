@@ -1,0 +1,27 @@
+# 构建上下文裁剪：仓库根是 build context，这些绝不该进镜像
+.git/
+.venv/
+**/__pycache__/
+**/*.pyc
+node_modules/
+**/node_modules/
+apps/dsh-bot-web/.next/
+apps/dsh-bot-web/node_modules/
+*.tsbuildinfo
+.data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.shadow.example
+dist/
+**/dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+coverage/
+*.log

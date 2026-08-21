@@ -13,7 +13,7 @@ def utc_now() -> str:
 
 
 def content_hash(*, canonical_url: str, published_at: str, raw_text: str) -> str:
-    payload = f"{canonical_url}\n{published_at}\n{raw_text}".encode("utf-8")
+    payload = f"{canonical_url}\n{published_at}\n{raw_text}".encode()
     return sha256(payload).hexdigest()
 
 
@@ -41,9 +41,10 @@ class Document:
         text = self.raw_text.strip()
         if len(text) < 16:
             return False
-        # 列表页标题不是原文，不能评分。
+        # 列表页场景下标题就是存证原文（如央行/证监会公告标题），
+        # 政策标题本身是第一手事实，允许评分；但标题为空的列表页条目不能评分。
         if self.collection_method == "HTML_INCREMENTAL" and len(text) < 200:
-            return False
+            return bool(self.title.strip())
         return True
 
     def to_dict(self) -> dict[str, Any]:

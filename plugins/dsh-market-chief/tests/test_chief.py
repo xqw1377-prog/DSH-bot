@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from dsh_contracts import HealthStatus, Market
 from dsh_gateway_client import GatewayClient
-from dsh_runtime import BotSession, Profile, load_profile, run_once, reset
+from dsh_runtime import BotSession, load_profile, run_once, reset
 from pathlib import Path
 from quant_gateway.adapters import MarketAdapter, register_adapter
 from quant_gateway import approval_store

@@ -111,7 +111,7 @@ class TaskStore:
         keys = ("task_id", "kind", "status", "subject_id", "approval_id",
                 "order_id", "idempotency_key", "payload", "created_at",
                 "updated_at", "reconciliation_status")
-        task = dict(zip(keys, row))
+        task = dict(zip(keys, row, strict=False))
         task["payload"] = json.loads(task["payload"])
         return task
 

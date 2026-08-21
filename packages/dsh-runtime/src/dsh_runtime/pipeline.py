@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 PIPELINE = ("SUGGESTION", "REPLAY", "BACKTEST", "SHADOW")
 BLOCKED_STAGES = ("PAPER", "HUMAN_APPROVAL", "LIVE")

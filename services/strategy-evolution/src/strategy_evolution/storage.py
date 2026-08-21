@@ -246,4 +246,4 @@ def audit_history(candidate_id: str | None = None) -> list[dict]:
     keys = ("audit_id", "occurred_at", "action", "candidate_id",
             "from_stage", "to_stage", "evidence_hash", "approval_id",
             "detail")
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(keys, r, strict=False)) for r in rows]

@@ -11,7 +11,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - fallback covered through behavior tests
     feedparser = None
 
-from intelligence_ingest.documents import Document, make_document
+from intelligence_ingest.documents import Document, make_document, utc_now
 from intelligence_ingest.fetch import Fetcher
 from intelligence_ingest.registry import SourceSpec
 
@@ -141,13 +141,14 @@ def collect_html_listing(source: SourceSpec, fetched: FetchedText, *, limit: int
         if url in seen or url == source.url:
             continue
         seen.add(url)
-        # 列表页没有正文：只存发现记录，不能进影响评分（eligible_for_impact=False）。
+        # 列表页没有正文：标题就是存证原文；没有页内日期，
+        # 用发现时间兼作 published_at（这是该事件对系统可见的第一手时间）。
         docs.append(
             make_document(
                 source_id=source.id,
                 source_tier=source.tier,
                 canonical_url=url,
-                published_at="",
+                published_at=utc_now(),
                 raw_text=title,
                 assets=list(source.assets),
                 collection_method=source.method,

@@ -30,7 +30,6 @@ from quant_gateway.approval_store import (
 from quant_gateway.auth import (
     Principal,
     require_cancel_service,
-    require_market_bot_service,
     require_market_runtime_service,
     require_write,
 )
@@ -616,6 +615,7 @@ def _request_order_impl(market: Market, intent: dict,
         ) from exc
     try:
         storage.finalize_idempotency_key(idempotency_key, order_id)
+        storage.maybe_prune()
     except Exception as exc:
         raise structured_error(
             503,

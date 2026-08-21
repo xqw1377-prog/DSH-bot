@@ -15,7 +15,6 @@ import pytest
 from dsh_contracts import HealthStatus, Market
 from quant_gateway.adapters import MarketAdapter, register_adapter
 from quant_gateway.adapters.registry import _adapters
-from quant_gateway.routers import orders
 
 
 class FakeAdapter(MarketAdapter):

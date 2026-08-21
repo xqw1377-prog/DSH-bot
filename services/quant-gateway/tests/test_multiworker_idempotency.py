@@ -81,8 +81,10 @@ def multiworker_gateway(tmp_path):
         rp.terminate()
         pytest.fail("risk-policy did not start")
     yield base
-    gw.send_signal(signal.SIGTERM); gw.wait(timeout=10)
-    rp.send_signal(signal.SIGTERM); rp.wait(timeout=10)
+    gw.send_signal(signal.SIGTERM)
+    gw.wait(timeout=10)
+    rp.send_signal(signal.SIGTERM)
+    rp.wait(timeout=10)
 
 
 def test_concurrent_processes_submit_exactly_once(multiworker_gateway, tmp_path):
@@ -92,7 +94,7 @@ def test_concurrent_processes_submit_exactly_once(multiworker_gateway, tmp_path)
         "X-API-Key": "bff-secret",
         "X-Actor-Id": "https://iap.test approver-1",
     }
-    runtime_headers = {"X-API-Key": "crypto-runtime-secret"}
+    _runtime_headers = {"X-API-Key": "crypto-runtime-secret"}
 
     # 准备：审批 + 风险快照（经 API，走完整门禁）
     approval = httpx.post(
