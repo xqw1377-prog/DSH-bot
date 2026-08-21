@@ -44,7 +44,7 @@ _ACTIVE_ORDER = {
     "ACKNOWLEDGED",
     "PARTIALLY_FILLED",
 }
-_ANALYZING = {"SIGNAL_RECEIVED", "PREVIEWED", "RUNNING"}
+_ANALYZING = {"SIGNAL_RECEIVED", "PREVIEWED", "RUNNING", "SHADOW_RECORDED"}
 _UNKNOWN = {
     "SUBMISSION_UNKNOWN",
     "APPROVAL_UNKNOWN",
@@ -141,7 +141,7 @@ def default_gateway_fetch(path: str) -> dict | list | None:
 def _health_runtime(health: dict | None) -> str:
     if health is None:
         return "OFFLINE"
-    if health.get("degraded") or not health.get("system_ok"):
+    if not health.get("system_ok"):
         return "DEGRADED"
     return "ONLINE"
 
@@ -153,10 +153,10 @@ def _health_data(
 ) -> str:
     if health is None:
         return "DISCONNECTED"
-    if market == "A_SHARE" and not a_share_session_open(now):
-        return "MARKET_CLOSED"
     if not health.get("data_fresh"):
         return "STALE"
+    if market == "A_SHARE" and not a_share_session_open(now):
+        return "MARKET_CLOSED"
     return "FRESH"
 
 
@@ -187,6 +187,38 @@ def _order_dimension(tasks: list[dict]) -> str:
     return "NONE"
 
 
+_RECOVERABLE_INCIDENT_REASONS = {
+    "market degraded or unreachable",
+    "market data degraded",
+}
+
+
+def _incident_reason(row: dict) -> str:
+    payload = row.get("payload") or {}
+    return str(payload.get("reason") or "")
+
+
+def _active_incidents(incidents: list[dict], health: dict | None) -> list[dict]:
+    """历史「数据降级」在当前健康已恢复时不再算未决事故。"""
+    active: list[dict] = []
+    recovered = bool(
+        health
+        and health.get("system_ok")
+        and health.get("data_fresh")
+    )
+    for row in incidents:
+        event = row.get("event_type")
+        if event == "account/mismatch":
+            active.append(row)
+            continue
+        if event != "incident/opened":
+            continue
+        if recovered and _incident_reason(row) in _RECOVERABLE_INCIDENT_REASONS:
+            continue
+        active.append(row)
+    return active
+
+
 def _risk_dimension(
     health: dict | None,
     tasks: list[dict],
@@ -199,12 +231,7 @@ def _risk_dimension(
         return "HALTED"
     if any(t.get("status") == "INCIDENT" for t in tasks):
         return "INCIDENT"
-    open_incidents = [
-        i
-        for i in incidents
-        if i.get("event_type") in ("incident/opened", "account/mismatch")
-    ]
-    if open_incidents:
+    if _active_incidents(incidents, health):
         return "INCIDENT"
     if health is None:
         return "WARNING"
@@ -293,6 +320,9 @@ def _build_bot(
     observed = None if health is None else health.get("source_observed_at")
     if hasattr(observed, "isoformat"):
         observed = observed.isoformat()
+    exported = None if health is None else health.get("exported_at")
+    if hasattr(exported, "isoformat"):
+        exported = exported.isoformat()
 
     unknown_n = sum(
         1
@@ -320,6 +350,9 @@ def _build_bot(
         "source_system": None if health is None else health.get("source_system"),
         "source_mode": None if health is None else health.get("source_mode"),
         "source_observed_at": observed,
+        "exported_at": exported,
+        "snapshot_age_seconds": None if health is None else health.get("snapshot_age_seconds"),
+        "export_age_seconds": None if health is None else health.get("export_age_seconds"),
         "connection": "DISCONNECTED" if health is None else "CONNECTED",
         "counts": {
             "pending_approvals": 0
@@ -327,17 +360,11 @@ def _build_bot(
             else _approvals_count(approvals, market),
             "open_orders": 0 if spec["read_only"] else open_n,
             "unknown_orders": 0 if spec["read_only"] else unknown_n,
-            "incidents": len(
-                [
-                    i
-                    for i in bot_incidents
-                    if i.get("event_type")
-                    in (
-                        "incident/opened",
-                        "account/mismatch",
-                        "kill_switch/succeeded",
-                    )
-                ]
+            "incidents": len(_active_incidents(bot_incidents, health))
+            + sum(
+                1
+                for i in bot_incidents
+                if i.get("event_type") == "kill_switch/succeeded"
             ),
         },
     }
@@ -398,6 +425,29 @@ def _aggregate_chief(crypto: dict, ashare: dict, all_tasks: list[dict]) -> dict:
         ) or None,
         "source_mode": global_mode(modes),
         "source_observed_at": as_of or None,
+        "exported_at": max(
+            (str(v) for v in (crypto.get("exported_at"), ashare.get("exported_at")) if v),
+            default=None,
+        ),
+        "snapshot_age_seconds": max(
+            (
+                v
+                for v in (
+                    crypto.get("snapshot_age_seconds"),
+                    ashare.get("snapshot_age_seconds"),
+                )
+                if isinstance(v, int)
+            ),
+            default=None,
+        ),
+        "export_age_seconds": max(
+            (
+                v
+                for v in (crypto.get("export_age_seconds"), ashare.get("export_age_seconds"))
+                if isinstance(v, int)
+            ),
+            default=None,
+        ),
         "connection": "DISCONNECTED" if runtime == "OFFLINE" else "CONNECTED",
         "counts": {
             "pending_approvals": crypto["counts"]["pending_approvals"]
@@ -458,7 +508,12 @@ def build_overview(
         if bot["order"] == "UNKNOWN" or bot["counts"]["unknown_orders"]:
             alerts.append(f"{bot['label']} UNKNOWN")
         if bot["data"] == "STALE":
-            alerts.append(f"{bot['label']} STALE")
+            age = bot.get("snapshot_age_seconds")
+            age_text = f"（观察已停 {age}s）" if isinstance(age, int) else ""
+            if bot.get("connection") == "CONNECTED":
+                alerts.append(f"{bot['label']} 控制面正常、数据面 STALE{age_text}")
+            else:
+                alerts.append(f"{bot['label']} STALE{age_text}")
     live_anomaly = any(bot["mode"] == "LIVE" for bot in (crypto, ashare))
     if live_anomaly:
         alerts.append("GLOBAL MODE: SECURITY VIOLATION")

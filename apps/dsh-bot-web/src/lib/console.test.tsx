@@ -5,7 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import { BotConsole } from "@/components/bot-console";
 import { IncidentsPanel } from "@/components/incidents-panel";
 import { ModeBanner } from "@/components/mode-banner";
-import type { BotsOverview } from "@dsh-bot/client-sdk";
+import { TodayBoardView } from "@/components/today-board";
+import { TopNav } from "@/components/top-nav";
+import type { BotsOverview, TodayBoard } from "@dsh-bot/client-sdk";
 import {
   afterViewer,
   capabilitiesFrom,
@@ -76,6 +78,8 @@ const overview = (over: Partial<BotsOverview> = {}): BotsOverview => ({
       source_system: "6celue_v5",
       source_mode: "demo",
       source_observed_at: "t1",
+      snapshot_age_seconds: 18600,
+      export_age_seconds: 18600,
       connection: "CONNECTED",
       counts: {
         pending_approvals: 2,
@@ -120,12 +124,65 @@ const viewer: Principal = {
 };
 
 describe("只读三 Bot 控制台", () => {
+  it("今日看板用两栏故事，标题不被历史任务带偏", () => {
+    const today: TodayBoard = {
+      headline: "今天最该看：Crypto 等待确认做空 HYPEUSDT",
+      stories: [
+        {
+          market: "CRYPTO",
+          title: "Crypto 在等确认，最强是做空 HYPEUSDT",
+          points: ["还没走完确认：做空 HYPEUSDT。这不是已经可以下的单。"],
+        },
+        {
+          market: "A_SHARE",
+          title: "A股闭市，4 条正式决策不执行",
+          points: ["想买 688498。闭市所以放弃，不是数据坏了。"],
+        },
+      ],
+      focus: [],
+      abandons: [],
+      watching: [],
+      screens: [],
+      counts: {},
+      disclaimer: "仅模拟，不会下单。筛选结果不是正式信号。",
+    };
+    const html = renderToStaticMarkup(<TodayBoardView today={today} />);
+    expect(html).toContain("today-board");
+    expect(html).toContain("today-story-CRYPTO");
+    expect(html).toContain("等待确认做空 HYPEUSDT");
+    expect(html).toContain("闭市所以放弃");
+    expect(html).not.toContain("BTCUSDT");
+  });
+
+  it("Shadow 导航不露出空的审批/组合/实验室", () => {
+    const shadow = renderToStaticMarkup(
+      <TopNav globalMode="SHADOW" liveAnomaly={false} />,
+    );
+    expect(shadow).toContain(">今日<");
+    expect(shadow).toContain(">决策<");
+    expect(shadow).toContain(">审计<");
+    expect(shadow).toContain(">情报<");
+    expect(shadow).not.toContain(">审批<");
+    expect(shadow).not.toContain(">组合<");
+    const paper = renderToStaticMarkup(
+      <TopNav globalMode="PAPER" liveAnomaly={false} />,
+    );
+    expect(paper).toContain(">审批<");
+  });
+
   it("首页固定三张 Bot 卡并展示六维与 as_of", () => {
     const html = renderToStaticMarkup(
       <BotConsole
         overview={overview({
           alerts: ["Crypto Bot HALTED", "Crypto Bot UNKNOWN"],
         })}
+        stories={[
+          {
+            market: "CRYPTO",
+            title: "Crypto 在等确认，最强是做空 HYPEUSDT",
+            points: [],
+          },
+        ]}
       />,
     );
     expect(html).toContain("bot-card-market-chief");
@@ -135,10 +192,14 @@ describe("只读三 Bot 控制台", () => {
     expect(html).toContain("as_of t1");
     expect(html).toContain("来源 6celue_v5");
     expect(html).toContain("源模式 demo");
+    expect(html).toContain("已停 18600s");
+    expect(html).toContain("控制面正常、数据面 STALE");
     expect(html).toContain("Runtime");
     expect(html).toContain("STALE");
     expect(html).toContain("HALTED");
     expect(html).toContain("console-alerts");
+    expect(html).toContain("Crypto 在等确认，最强是做空 HYPEUSDT");
+    expect(html).toContain("汇总两市结论，不能下单");
   });
 
   it("数据过期显示 STALE，不能当绿色 FRESH", () => {

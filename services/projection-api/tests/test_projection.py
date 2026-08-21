@@ -2,6 +2,7 @@
 上游状态码原样传递(失败关闭不被压成 500)。"""
 
 from datetime import datetime
+import sqlite3
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -15,6 +16,13 @@ client = TestClient(app)
 
 _SESSION_OPEN = datetime(2026, 8, 18, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 _SESSION_CLOSED = datetime(2026, 8, 18, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+@pytest.fixture(autouse=True)
+def projection_dev_defaults(monkeypatch):
+    monkeypatch.setenv("DSH_ENV", "development")
+    monkeypatch.delenv("PROJECTION_API_KEY", raising=False)
+    monkeypatch.delenv("PROJECTION_API_KEYS", raising=False)
 
 
 @pytest.fixture()
@@ -137,7 +145,8 @@ def test_incidents_include_gateway_kill_switch_audit(monkeypatch):
                     {
                         "audit_id": "audit-ks-1",
                         "occurred_at": "2026-08-17T00:00:00+00:00",
-                        "actor": "alice",
+                        "service_principal": "dsh-bff",
+                        "actor_principal": "https://iap.test user-1",
                         "action": "kill_switch.succeeded",
                         "market": "CRYPTO",
                         "subject_id": "paper-crypto-001",
@@ -179,6 +188,9 @@ def _health(fresh: bool, **extra):
         "source_system": extra.get("source_system"),
         "source_mode": extra.get("source_mode"),
         "source_observed_at": extra.get("source_observed_at"),
+        "exported_at": extra.get("exported_at"),
+        "snapshot_age_seconds": extra.get("snapshot_age_seconds"),
+        "export_age_seconds": extra.get("export_age_seconds"),
     }
     return body
 
@@ -352,7 +364,7 @@ def test_bots_overview_a_share_closed_is_market_closed_not_stale(monkeypatch):
         if "CRYPTO/health" in path:
             return _health(True)
         if "A_SHARE/health" in path:
-            return _health(False)
+            return _health(True, snapshot_age_seconds=12, export_age_seconds=8)
         return []
 
     from projection_api.overview import build_overview
@@ -362,6 +374,29 @@ def test_bots_overview_a_share_closed_is_market_closed_not_stale(monkeypatch):
     assert ashare["data"] == "MARKET_CLOSED"
     assert ashare["data"] != "STALE"
     assert not any("A 股" in a and "STALE" in a for a in body["alerts"])
+
+
+def test_bots_overview_closed_but_observation_stopped_is_stale(monkeypatch):
+    monkeypatch.setenv("DSH_CRYPTO_MODE", "shadow")
+    monkeypatch.setenv("DSH_A_SHARE_MODE", "shadow")
+    monkeypatch.setattr(projection_main, "get_bot_tasks", lambda: [])
+    monkeypatch.setattr(projection_main, "get_incidents", lambda limit=50: [])
+
+    def fetch(path: str):
+        if "CRYPTO/health" in path:
+            return _health(True)
+        if "A_SHARE/health" in path:
+            return _health(False, snapshot_age_seconds=18600, export_age_seconds=18600)
+        return []
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch, now=_SESSION_CLOSED)
+    ashare = next(b for b in body["bots"] if b["bot_id"] == "a-share")
+    assert ashare["data"] == "STALE"
+    assert ashare["runtime"] == "ONLINE"
+    assert ashare["snapshot_age_seconds"] == 18600
+    assert any("控制面正常、数据面 STALE" in a for a in body["alerts"])
 
 
 def test_bots_overview_partial_crypto_failure_keeps_other_cards(monkeypatch):
@@ -425,6 +460,43 @@ def test_bots_overview_halted_outranks_healthy_peer(monkeypatch):
     assert chief["severity"] == "HALTED"
 
 
+def test_recovered_data_incidents_do_not_keep_risk_red(monkeypatch):
+    monkeypatch.setenv("DSH_CRYPTO_MODE", "shadow")
+    monkeypatch.setenv("DSH_A_SHARE_MODE", "shadow")
+    monkeypatch.setattr(projection_main, "get_bot_tasks", lambda: [])
+    monkeypatch.setattr(
+        projection_main,
+        "get_incidents",
+        lambda limit=50: [
+            {
+                "event_type": "incident/opened",
+                "market": "CRYPTO",
+                "occurred_at": "2026-08-19T07:49:26+00:00",
+                "payload": {"reason": "market degraded or unreachable"},
+            },
+            {
+                "event_type": "incident/opened",
+                "market": "A_SHARE",
+                "occurred_at": "2026-08-19T07:49:26+00:00",
+                "payload": {"reason": "market data degraded"},
+            },
+        ],
+    )
+
+    def fetch(path: str):
+        return _health(True) if "health" in path else []
+
+    from projection_api.overview import build_overview
+
+    body = build_overview(fetch, now=_SESSION_OPEN)
+    crypto = next(b for b in body["bots"] if b["bot_id"] == "crypto")
+    ashare = next(b for b in body["bots"] if b["bot_id"] == "a-share")
+    assert crypto["risk"] == "NORMAL"
+    assert ashare["risk"] == "NORMAL"
+    assert crypto["counts"]["incidents"] == 0
+    assert ashare["counts"]["incidents"] == 0
+
+
 def test_overview_requires_service_identity_in_production(monkeypatch):
     monkeypatch.setenv("DSH_ENV", "production")
     monkeypatch.delenv("PROJECTION_API_KEY", raising=False)
@@ -444,4 +516,106 @@ def test_overview_requires_service_identity_in_production(monkeypatch):
         "crypto",
         "a-share",
     ]
+
+
+def test_intelligence_feed_and_audit_reports_from_runtime_db(tmp_path, monkeypatch):
+    db = tmp_path / "runtime.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE intelligence_items (
+            item_id TEXT PRIMARY KEY,
+            bot TEXT NOT NULL,
+            market TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            symbol TEXT,
+            title TEXT NOT NULL,
+            source_url TEXT,
+            published_at TEXT,
+            observed_at TEXT NOT NULL,
+            authority TEXT,
+            direction TEXT,
+            horizon TEXT,
+            importance REAL NOT NULL DEFAULT 0,
+            confidence REAL NOT NULL DEFAULT 0,
+            action TEXT,
+            dedupe_key TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE audit_reports (
+            report_id TEXT PRIMARY KEY,
+            bot TEXT NOT NULL,
+            market TEXT NOT NULL,
+            report_kind TEXT NOT NULL,
+            period_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO intelligence_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "intel-1",
+            "crypto-bot",
+            "CRYPTO",
+            "eth-foundation",
+            "ETHUSDT",
+            "Ethereum 基金会发布路线调整",
+            "https://example.com/eth",
+            "2026-08-20T00:00:00+00:00",
+            "2026-08-20T00:10:00+00:00",
+            "official",
+            "NEGATIVE",
+            "medium",
+            0.82,
+            0.72,
+            "SELL",
+            "dedupe-1",
+            '{"held": true}',
+        ),
+    )
+    conn.execute(
+        "INSERT INTO audit_reports VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "report-1",
+            "crypto-bot",
+            "CRYPTO",
+            "intelligence-daily",
+            "2026-08-20",
+            "2026-08-20T00:20:00+00:00",
+            '{"score": {"intelligence_hit_rate": 0.75}}',
+        ),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("DSH_RUNTIME_DB", str(db))
+
+    feed = client.get("/v1/intelligence/feed", params={"bot": "crypto-bot"})
+    assert feed.status_code == 200
+    body = feed.json()
+    assert len(body) == 1
+    assert body[0]["symbol"] == "ETHUSDT"
+    assert body[0]["action"] == "SELL"
+
+    reports = client.get("/v1/audit/reports", params={"bot": "crypto-bot"})
+    assert reports.status_code == 200
+    report_body = reports.json()
+    assert len(report_body) == 1
+    assert report_body[0]["report_kind"] == "intelligence-daily"
+
+
+def test_intelligence_snapshot_is_shadow_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUANT_GATEWAY_SNAPSHOT_DIR", str(tmp_path))
+    empty = client.get("/v1/intelligence")
+    assert empty.status_code == 200
+    assert empty.json()["events"] == []
+    (tmp_path / "INTELLIGENCE.json").write_text(
+        '{"exported_at":"2026-08-20T00:00:00+00:00","mode":"SHADOW","events":[{"event_id":"evt-1","can_apply":false}],"documents":[]}',
+        encoding="utf-8",
+    )
+    body = client.get("/v1/intelligence").json()
+    assert body["mode"] == "SHADOW"
+    assert body["as_of"] == "2026-08-20T00:00:00+00:00"
+    assert body["events"][0]["event_id"] == "evt-1"
 

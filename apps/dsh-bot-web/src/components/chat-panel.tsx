@@ -12,7 +12,7 @@ export function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "bot",
-      text: "你好，我是 Market Chief。我只能解释任务、对账和事故，不能批准、下单或操作 Kill Switch。",
+      text: "你好，我是 Market Chief。问我今天该看什么、币想做什么、A股为什么不做。我不能批准、下单或操作 Kill Switch。",
     },
   ]);
   const [input, setInput] = useState("");
@@ -101,7 +101,7 @@ export function ChatPanel() {
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="询问任务、对账或事故…"
+          placeholder="今天该看什么？币想做什么？A股为什么不做？"
           style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid #d1d5db" }}
         />
         <button

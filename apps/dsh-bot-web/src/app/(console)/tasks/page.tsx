@@ -34,8 +34,12 @@ export default async function TasksPage() {
           </thead>
           <tbody>
             {tasks.map((t: BotTask) => {
+              const decision = (t.payload && (t.payload as { shadow_decision?: Record<string, unknown> }).shadow_decision) || {};
               const reason = String(
-                (t.payload && (t.payload.reason || t.payload.unknown_since)) || "—",
+                decision.skip_reason
+                || decision.action
+                || (t.payload && (t.payload.reason || t.payload.unknown_since))
+                || "—",
               );
               const hot = t.status === "INCIDENT" || t.reconciliation_status === "MISMATCH";
               return (

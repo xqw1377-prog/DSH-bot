@@ -1,4 +1,4 @@
-import type { BotTask, Market, Signal } from "@dsh-bot/client-sdk";
+import type { BotTask, Market, ShadowDecision, Signal } from "@dsh-bot/client-sdk";
 import { projection } from "@/lib/projection";
 
 export async function MarketDrilldown({
@@ -10,27 +10,67 @@ export async function MarketDrilldown({
   title: string;
   bot: string;
 }) {
-  const [signals, tasks] = await Promise.all([
+  const [signals, tasks, decisions] = await Promise.all([
     projection.getSignals(market).catch(() => null),
     projection.getBotTasks(bot).catch(() => null),
+    projection.getShadowDecisions(bot).catch(() => null),
   ]);
   const orders = (tasks || []).filter((task) => task.order_id);
 
   return (
     <main style={{ padding: 24 }}>
       <h1>{title}</h1>
-      <p>Signals 与 Orders 下钻。只读，不改资金路径。</p>
-      <h2>Signals</h2>
+      <p>只读。先看策略现在想做什么，再看正式信号。不会下单。</p>
+      <h2>现在想做什么</h2>
+      <DecisionList decisions={decisions} />
+      <h2>正式信号</h2>
       <SignalsTable signals={signals} />
-      <h2>Orders / 任务</h2>
+      <h2>任务</h2>
       <OrdersTable tasks={orders.length ? orders : tasks} />
     </main>
   );
 }
 
+function DecisionList({ decisions }: { decisions: ShadowDecision[] | null }) {
+  if (!decisions) {
+    return (
+      <p style={{ color: "red" }}>
+        无法加载 Shadow 决策。控制面 Projection `:8004` 不可达，不是策略没信号。
+      </p>
+    );
+  }
+  if (decisions.length === 0) {
+    return <p>还没有 Shadow 决策。需要正式信号，并且 Bot 已按 shadow 跑过一轮。</p>;
+  }
+  return (
+    <ul>
+      {decisions.slice(0, 8).map((row) => (
+        <li key={row.task_id} style={{ marginBottom: 8 }}>
+          <strong>
+            {row.action}
+            {row.skip_reason ? ` / ${row.skip_reason}` : ""}
+          </strong>{" "}
+          {row.symbol} {row.quantity} @ {row.suggested_price || "—"}
+          <div style={{ color: "#4b5563", fontSize: 13 }}>
+            {row.why}
+            {row.why_not ? ` ${row.why_not}` : ""}
+            {row.outcome_price
+              ? ` 复盘 ${row.suggested_price} → ${row.outcome_price}（${row.simulated_pnl}）`
+              : ""}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function SignalsTable({ signals }: { signals: Signal[] | null }) {
   if (!signals) {
-    return <p style={{ color: "red" }}>无法加载 signals。</p>;
+    return (
+      <p style={{ color: "red" }}>
+        无法加载 signals。控制面不可达（Gateway/Projection），数据面导出循环仍可能在写。
+      </p>
+    );
   }
   if (signals.length === 0) {
     return <p>暂无信号。</p>;
@@ -65,7 +105,11 @@ function SignalsTable({ signals }: { signals: Signal[] | null }) {
 
 function OrdersTable({ tasks }: { tasks: BotTask[] | null }) {
   if (!tasks) {
-    return <p style={{ color: "red" }}>无法加载订单任务。</p>;
+    return (
+      <p style={{ color: "red" }}>
+        无法加载订单任务。控制面 Projection `:8004` 不可达。
+      </p>
+    );
   }
   if (tasks.length === 0) {
     return <p>暂无订单任务。</p>;

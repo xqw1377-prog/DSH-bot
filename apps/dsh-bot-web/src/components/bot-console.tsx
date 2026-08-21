@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { BotOverview, BotsOverview } from "@dsh-bot/client-sdk";
+import type { BotOverview, BotsOverview, TodayStory } from "@dsh-bot/client-sdk";
 import { dataLooksHealthy } from "@/lib/console-view";
 
 const CARD_HREF: Record<BotOverview["bot_id"], string> = {
@@ -8,7 +8,19 @@ const CARD_HREF: Record<BotOverview["bot_id"], string> = {
   "a-share": "/a-share",
 };
 
-export function BotConsole({ overview }: { overview: BotsOverview }) {
+const STORY_BY_BOT: Record<BotOverview["bot_id"], string | null> = {
+  "market-chief": null,
+  crypto: "CRYPTO",
+  "a-share": "A_SHARE",
+};
+
+export function BotConsole({
+  overview,
+  stories = [],
+}: {
+  overview: BotsOverview;
+  stories?: TodayStory[];
+}) {
   return (
     <section data-testid="bot-console">
       {overview.alerts.length > 0 && (
@@ -35,14 +47,28 @@ export function BotConsole({ overview }: { overview: BotsOverview }) {
         }}
       >
         {overview.bots.map((bot) => (
-          <BotCard key={bot.bot_id} bot={bot} />
+          <BotCard
+            key={bot.bot_id}
+            bot={bot}
+            summary={
+              bot.bot_id === "market-chief"
+                ? "汇总两市结论，不能下单"
+                : stories.find((story) => story.market === STORY_BY_BOT[bot.bot_id])?.title
+            }
+          />
         ))}
       </div>
     </section>
   );
 }
 
-export function BotCard({ bot }: { bot: BotOverview }) {
+export function BotCard({
+  bot,
+  summary,
+}: {
+  bot: BotOverview;
+  summary?: string;
+}) {
   const stale = !dataLooksHealthy(bot.data);
   return (
     <Link
@@ -66,6 +92,9 @@ export function BotCard({ bot }: { bot: BotOverview }) {
           </span>
         )}
       </div>
+      {summary && (
+        <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.5 }}>{summary}</p>
+      )}
       <DimensionGrid bot={bot} />
       <p style={{ margin: "12px 0 0", fontSize: 12, color: "#6b7280" }}>
         连接 {bot.connection} · 时钟 {bot.clock_skew_ms ?? "—"}ms · as_of {bot.as_of}
@@ -77,9 +106,20 @@ export function BotCard({ bot }: { bot: BotOverview }) {
         >
           来源 {bot.source_system || "—"} · 源模式 {bot.source_mode || "—"} ·
           观察 {bot.source_observed_at || "—"}
+          {typeof bot.snapshot_age_seconds === "number"
+            ? ` · 已停 ${bot.snapshot_age_seconds}s`
+            : ""}
         </p>
       )}
-      {bot.detail && (
+      {bot.data === "STALE" && bot.connection === "CONNECTED" && (
+        <p
+          data-testid={`bot-plane-${bot.bot_id}`}
+          style={{ margin: "4px 0 0", fontSize: 13, color: "#b91c1c" }}
+        >
+          控制面正常、数据面 STALE
+        </p>
+      )}
+      {bot.degraded && bot.detail && (
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "#6b7280" }}>
           降级原因：{bot.detail}
         </p>
