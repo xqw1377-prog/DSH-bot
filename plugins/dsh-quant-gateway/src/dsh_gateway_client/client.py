@@ -139,15 +139,19 @@ class GatewayClient:
         subject_type: str,
         subject_id: str,
         evidence_refs: list[str] | None = None,
+        binding: dict | None = None,
     ):
         """Bot 只能请求审批，不能替人决定。"""
-        resp = self._client.post("/v1/approvals", json={
+        body = {
             "market": market.value,
             "requested_by_bot": requested_by_bot,
             "subject_type": subject_type,
             "subject_id": subject_id,
             "evidence_refs": evidence_refs or [],
-        })
+        }
+        if binding is not None:
+            body["binding"] = binding
+        resp = self._client.post("/v1/approvals", json=body)
         raise_for_response(resp)
         return resp.json()
 

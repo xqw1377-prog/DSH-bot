@@ -39,6 +39,7 @@ services/
   strategy-evolution/   # 实验账本、验证门禁、策略晋级状态机（FastAPI）
   risk-policy/          # 全局风险预算与策略（FastAPI）
   projection-api/       # 面向前端的只读投影（FastAPI）
+  intelligence-ingest/  # 官方 API/RSS/增量 HTML，事件只进 Shadow
   incident-center/      # 事故中心（指纹/消息幂等）
   risk-auditor/         # 独立风控验证服务
 packages/

@@ -18,6 +18,20 @@ def workflow():
     return wf
 
 
+BINDING = {
+    "market": "CRYPTO",
+    "account_id": "paper-crypto-001",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "order_type": "MARKET",
+    "quantity": "0.01",
+    "strategy_version": "1",
+    "signal_snapshot_id": "signal-1",
+    "risk_snapshot_id": "risk-snap-1",
+    "valid_until": "2099-01-01T00:00:00Z",
+}
+
+
 def test_request_creates_pending_approval(workflow):
     approval_id = workflow.request(
         market="CRYPTO",
@@ -25,6 +39,7 @@ def test_request_creates_pending_approval(workflow):
         subject_type="order",
         subject_id="intent-42",
         evidence_refs=["signal-1", "risk-snap-1"],
+        binding=BINDING,
     )
     assert approval_id.startswith("appr-")
     fetched = workflow._client.get(f"/v1/approvals/{approval_id}").json()
@@ -34,7 +49,7 @@ def test_request_creates_pending_approval(workflow):
 
 def test_wait_returns_approved_after_human_decision(workflow):
     approval_id = workflow.request(
-        "CRYPTO", "crypto-bot", "order", "intent-43"
+        "CRYPTO", "crypto-bot", "order", "intent-43", binding=BINDING
     )
     # 人工在前端批准
     workflow._client.post(
@@ -47,7 +62,9 @@ def test_wait_returns_approved_after_human_decision(workflow):
 
 
 def test_wait_returns_rejected(workflow):
-    approval_id = workflow.request("CRYPTO", "crypto-bot", "order", "intent-44")
+    approval_id = workflow.request(
+        "CRYPTO", "crypto-bot", "order", "intent-44", binding=BINDING
+    )
     workflow._client.post(
         f"/v1/approvals/{approval_id}/decide",
         json={"decision": "REJECTED", "decided_by": "alice"},
@@ -58,7 +75,9 @@ def test_wait_returns_rejected(workflow):
 
 
 def test_wait_times_out_fail_closed(workflow):
-    approval_id = workflow.request("CRYPTO", "crypto-bot", "order", "intent-45")
+    approval_id = workflow.request(
+        "CRYPTO", "crypto-bot", "order", "intent-45", binding=BINDING
+    )
     outcome = workflow.wait_for_decision(
         approval_id, poll_interval=0.01, max_wait_seconds=0.05
     )

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/intelligence/impact.assessed.json",
+  "title": "IntelligenceImpactAssessed",
+  "type": "object",
+  "required": [
+    "item_id",
+    "market",
+    "direction",
+    "horizon",
+    "importance",
+    "confidence",
+    "action",
+    "held",
+    "watched"
+  ],
+  "properties": {
+    "item_id": { "type": "string" },
+    "market": { "type": "string" },
+    "symbol": { "type": ["string", "null"] },
+    "direction": { "type": "string" },
+    "horizon": { "type": "string" },
+    "importance": { "type": "number" },
+    "confidence": { "type": "number" },
+    "action": { "type": "string" },
+    "held": { "type": "boolean" },
+    "watched": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

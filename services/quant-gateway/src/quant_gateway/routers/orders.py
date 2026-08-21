@@ -16,10 +16,16 @@ import os
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
-from dsh_contracts import Market, OrderIntent, RiskSnapshot
+from dsh_contracts import ApprovalStatus, Market, OrderIntent, RiskSnapshot
 from quant_gateway import audit, storage
 from quant_gateway.adapters import get_adapter
-from quant_gateway.approval_store import check_order_risk, is_approved
+from quant_gateway.approval_store import (
+    ClaimStatus,
+    check_order_risk,
+    claim_order_reservation,
+    compute_intent_digest,
+    get_approval,
+)
 from quant_gateway.auth import Principal, require_write
 from quant_gateway.errors import structured_error
 
@@ -39,6 +45,128 @@ def _idempotency_age_seconds(updated_at: str | None) -> float | None:
         return None
 
 RISK_POLICY_URL = os.environ.get("RISK_POLICY_URL", "http://127.0.0.1:8003")
+
+
+def digest_from_intent(intent: OrderIntent) -> str:
+    """从订单意图计算绑定摘要，与审批创建时的 binding 摘要比对。"""
+    return compute_intent_digest({
+        "market": intent.market.value,
+        "account_id": intent.account_id,
+        "symbol": intent.symbol,
+        "side": intent.side.value,
+        "order_type": intent.order_type,
+        "quantity": str(intent.quantity),
+        "limit_price": (
+            str(intent.limit_price) if intent.limit_price is not None else None
+        ),
+        "strategy_version": intent.strategy_version,
+        "signal_snapshot_id": intent.signal_snapshot_id,
+        "risk_snapshot_id": intent.risk_snapshot_id,
+        "valid_until": intent.valid_until.isoformat(),
+    })
+
+
+def _precheck_approval(intent: OrderIntent, intent_digest: str) -> None:
+    """快速失败预检（只读）。权威门禁在 claim_order_reservation。"""
+    if not intent.approval_id:
+        raise structured_error(
+            422,
+            error_code="APPROVAL_REQUIRED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message="approval_id is required for state-changing orders",
+        )
+    approval = get_approval(intent.approval_id)
+    if approval is None:
+        raise structured_error(
+            422,
+            error_code="APPROVAL_NOT_APPROVED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"approval {intent.approval_id} not found or expired; order rejected"
+            ),
+        )
+    if approval.status != ApprovalStatus.APPROVED:
+        if approval.status in (
+            ApprovalStatus.CONSUMING,
+            ApprovalStatus.CONSUMED,
+        ):
+            raise structured_error(
+                409,
+                error_code=(
+                    "APPROVAL_IN_FLIGHT"
+                    if approval.status == ApprovalStatus.CONSUMING
+                    else "APPROVAL_ALREADY_CONSUMED"
+                ),
+                phase="SUBMITTING",
+                retryable=False,
+                submission_unknown=False,
+                message=(
+                    f"approval {intent.approval_id} is "
+                    f"{approval.status.value}; already consumed for a previous order"
+                ),
+            )
+        raise structured_error(
+            422,
+            error_code="APPROVAL_NOT_APPROVED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"approval {intent.approval_id} status is {approval.status.value}; "
+                "not APPROVED; order rejected"
+            ),
+        )
+    if approval.intent_digest is None:
+        raise structured_error(
+            409,
+            error_code="APPROVAL_UNBOUNDED",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"approval {intent.approval_id} carries no order intent binding; "
+                "cannot authorize an order"
+            ),
+        )
+    if approval.intent_digest != intent_digest:
+        raise structured_error(
+            409,
+            error_code="APPROVAL_INTENT_MISMATCH",
+            phase="PRE_SUBMIT",
+            retryable=False,
+            submission_unknown=False,
+            message=(
+                f"order intent does not match approved binding for "
+                f"{intent.approval_id}; order rejected"
+            ),
+        )
+
+
+_CLAIM_ERRORS = {
+    ClaimStatus.APPROVAL_NOT_FOUND: "APPROVAL_NOT_APPROVED",
+    ClaimStatus.APPROVAL_NOT_APPROVED: "APPROVAL_ALREADY_CONSUMED",
+    ClaimStatus.APPROVAL_EXPIRED: "APPROVAL_EXPIRED",
+    ClaimStatus.APPROVAL_INTENT_MISMATCH: "APPROVAL_INTENT_MISMATCH",
+    ClaimStatus.APPROVAL_UNBOUNDED: "APPROVAL_UNBOUNDED",
+    ClaimStatus.IDEMPOTENCY_IN_FLIGHT: "IDEMPOTENCY_IN_FLIGHT",
+}
+
+
+def _raise_claim_failure(status: ClaimStatus, message: str) -> None:
+    retryable = status == ClaimStatus.IDEMPOTENCY_IN_FLIGHT
+    raise structured_error(
+        409,
+        error_code=_CLAIM_ERRORS[status],
+        phase="SUBMITTING",
+        retryable=retryable,
+        submission_unknown=retryable,
+        message=message,
+    )
+
 
 def register_risk_snapshot(snapshot: RiskSnapshot) -> None:
     """注册风险快照（持久化，多 worker 可见）。生产由 risk-policy 写入。"""
@@ -268,27 +396,9 @@ def request_order(market: Market, intent: dict,
             message=f"risk check failed: {check.get('limits_hit')}; order rejected",
         )
 
-    # 5. 审批（失败关闭）
-    if not order_intent.approval_id:
-        raise structured_error(
-            422,
-            error_code="APPROVAL_REQUIRED",
-            phase="PRE_SUBMIT",
-            retryable=False,
-            submission_unknown=False,
-            message="approval_id is required for state-changing orders",
-        )
-    if not is_approved(order_intent.approval_id):
-        raise structured_error(
-            422,
-            error_code="APPROVAL_NOT_APPROVED",
-            phase="PRE_SUBMIT",
-            retryable=False,
-            submission_unknown=False,
-            message=(
-                f"approval {order_intent.approval_id} is not APPROVED; order rejected"
-            ),
-        )
+    # 5. 审批（失败关闭 + 意图绑定）：快速失败预检；权威门禁见第 7 步原子消费
+    intent_digest = digest_from_intent(order_intent)
+    _precheck_approval(order_intent, intent_digest)
 
     # 6. Kill Switch / 通道降级：禁止新提交，但不阻断已提交订单的幂等认领
     health = adapter.get_health()
@@ -307,19 +417,15 @@ def request_order(market: Market, intent: dict,
             ),
         )
 
-    # 7. 原子抢占幂等键：并发下两个相同请求只有一个能走到提交
-    if not storage.record_idempotency_key(idempotency_key, request_hash):
-        raise structured_error(
-            409,
-            error_code="IDEMPOTENCY_IN_FLIGHT",
-            phase="SUBMITTING",
-            retryable=True,
-            submission_unknown=True,
-            message=(
-                "duplicate idempotency key (concurrent request won); "
-                "no new order created"
-            ),
-        )
+    # 7. 原子抢占：审批消费 + 幂等键声明在同一事务（并发唯一胜者）
+    claim_status, claim_message = claim_order_reservation(
+        order_intent.approval_id,
+        intent_digest,
+        idempotency_key,
+        request_hash,
+    )
+    if claim_status != ClaimStatus.OK:
+        _raise_claim_failure(claim_status, claim_message)
 
     try:
         order_id = adapter.request_order(order_intent.model_dump(mode="json"))

@@ -86,7 +86,20 @@ def test_concurrent_processes_submit_exactly_once(multiworker_gateway, tmp_path)
     approval = httpx.post(base + "/v1/approvals", json={
         "market": "CRYPTO", "requested_by_bot": "crypto-bot",
         "subject_type": "order", "subject_id": "sig-mw",
-    }).json()
+        "binding": {
+            "market": "CRYPTO",
+            "account_id": "paper-crypto-001",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "quantity": "0.01",
+            "strategy_version": "1",
+            "signal_snapshot_id": "sig-mw",
+            "risk_snapshot_id": "rs-mw",
+            "valid_until": "2030-01-01T00:00:00Z",
+        },
+    })
+    assert approval.status_code == 201, approval.text
+    approval = approval.json()
     httpx.post(
         base + f"/v1/approvals/{approval['approval_id']}/decide",
         json={"decision": "APPROVED", "decided_by": "alice"},

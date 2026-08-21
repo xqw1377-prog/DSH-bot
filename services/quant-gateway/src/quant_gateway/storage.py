@@ -19,7 +19,10 @@ import os
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from dsh_contracts import Approval, ApprovalStatus
 
 # 进程内串行化 + SQLite IMMEDIATE：覆盖同进程多线程；
 # 多 worker / 多进程依赖 PRIMARY KEY + BEGIN IMMEDIATE。
@@ -266,6 +269,7 @@ def finalize_idempotency_key(key: str, order_id: str) -> None:
             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
             (order_id, key),
         )
+        finalize_consumed_approval(conn, key, order_id)
         conn.commit()
 
 
@@ -277,6 +281,7 @@ def mark_idempotency_failed(key: str) -> None:
             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = ?",
             (key,),
         )
+        release_consumed_approval(conn, key)
         conn.commit()
 
 
@@ -304,3 +309,55 @@ def get_idempotency_record(key: str) -> dict[str, Any] | None:
 def get_order_id_for_key(key: str) -> str | None:
     entry = get_idempotency_entry(key)
     return entry[0] if entry else None
+
+
+def release_consumed_approval(conn: sqlite3.Connection, idempotency_key: str) -> None:
+    """把已消费的审批释放回 APPROVED（幂等键失败后允许按新单重试）。
+    必须与幂等键 FAILED 标记在同一事务内调用（见 mark_idempotency_failed），
+    保证「键释放 + 审批回滚」原子。
+    """
+    row = conn.execute(
+        """SELECT approval_id, payload FROM approvals
+           WHERE json_extract(payload, '$.consumed_key') = ?""",
+        (idempotency_key,),
+    ).fetchone()
+    if row is None:
+        return
+    approval = Approval.model_validate_json(row[1])
+    if approval.status != ApprovalStatus.CONSUMING:
+        return
+    updated = approval.model_copy(update={
+        "status": ApprovalStatus.APPROVED,
+        "consumed_key": None,
+        "consumed_request_hash": None,
+        "consumed_at": None,
+        "expires_at": datetime.now(UTC) + timedelta(minutes=30),
+    })
+    conn.execute(
+        "UPDATE approvals SET status = ?, payload = ? WHERE approval_id = ?",
+        (updated.status.value, updated.model_dump_json(), approval.approval_id),
+    )
+
+
+def finalize_consumed_approval(conn: sqlite3.Connection, idempotency_key: str, order_id: str) -> None:
+    """消费完成：审批进入 CONSUMED 并回填权威订单 ID。
+    必须与幂等键 COMPLETED 标记在同一事务内调用（见 finalize_idempotency_key）。
+    """
+    row = conn.execute(
+        """SELECT approval_id, payload FROM approvals
+           WHERE json_extract(payload, '$.consumed_key') = ?""",
+        (idempotency_key,),
+    ).fetchone()
+    if row is None:
+        return
+    approval = Approval.model_validate_json(row[1])
+    if approval.status != ApprovalStatus.CONSUMING:
+        return
+    updated = approval.model_copy(update={
+        "status": ApprovalStatus.CONSUMED,
+        "consumed_order_id": order_id,
+    })
+    conn.execute(
+        "UPDATE approvals SET status = ?, payload = ? WHERE approval_id = ?",
+        (updated.status.value, updated.model_dump_json(), approval.approval_id),
+    )

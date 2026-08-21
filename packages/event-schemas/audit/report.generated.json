@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/audit/report.generated.json",
+  "title": "AuditReportGenerated",
+  "type": "object",
+  "required": [
+    "report_id",
+    "report_kind",
+    "period_key",
+    "market",
+    "item_count",
+    "shadow_count"
+  ],
+  "properties": {
+    "report_id": { "type": "string" },
+    "report_kind": { "type": "string" },
+    "period_key": { "type": "string" },
+    "market": { "type": "string" },
+    "item_count": { "type": "integer" },
+    "shadow_count": { "type": "integer" }
+  },
+  "additionalProperties": true
+}

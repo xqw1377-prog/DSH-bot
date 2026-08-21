@@ -52,4 +52,5 @@ UNKNOWN -> RECONCILING -> ACKNOWLEDGED | FILLED | FAILED
 | strategy-evolution | 8002 |
 | risk-policy | 8003 |
 | projection-api | 8004 |
+| intelligence-ingest（可选） | 8006 |
 | dsh-bot-web | 3000 |

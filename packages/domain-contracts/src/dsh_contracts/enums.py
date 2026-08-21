@@ -45,8 +45,17 @@ class StrategyStage(StrEnum):
 
 
 class ApprovalStatus(StrEnum):
+    """审批状态机。
+
+    REQUESTED -> APPROVED -> CONSUMING -> CONSUMED
+    REQUESTED -> REJECTED / EXPIRED
+    一个审批只能被消费一次（一次性订单凭据）。
+    """
+
     REQUESTED = "REQUESTED"
     APPROVED = "APPROVED"
+    CONSUMING = "CONSUMING"
+    CONSUMED = "CONSUMED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
 

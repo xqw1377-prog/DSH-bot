@@ -27,7 +27,7 @@ def test_approvals_survive_restart(tmp_path, monkeypatch):
     created = client.post("/v1/approvals", json={
         "market": "CRYPTO",
         "requested_by_bot": "crypto-bot",
-        "subject_type": "order",
+        "subject_type": "risk_budget",
         "subject_id": "intent-1",
     }).json()
 
@@ -75,7 +75,7 @@ def test_audit_trail_recorded(tmp_path, monkeypatch):
     created = client.post("/v1/approvals", json={
         "market": "CRYPTO",
         "requested_by_bot": "crypto-bot",
-        "subject_type": "order",
+        "subject_type": "risk_budget",
         "subject_id": "intent-1",
     }).json()
     client.post(
@@ -113,7 +113,7 @@ def test_auth_scope_enforced(monkeypatch):
     created = client.post("/v1/approvals", json={
         "market": "CRYPTO",
         "requested_by_bot": "crypto-bot",
-        "subject_type": "order",
+        "subject_type": "risk_budget",
         "subject_id": "intent-1",
     }, headers={"X-API-Key": "chief-secret"}).json()
     assert client.post(
@@ -135,7 +135,7 @@ def test_decided_by_overwritten_by_principal(monkeypatch):
     created = client.post("/v1/approvals", json={
         "market": "CRYPTO",
         "requested_by_bot": "crypto-bot",
-        "subject_type": "order",
+        "subject_type": "risk_budget",
         "subject_id": "intent-2",
     }, headers={"X-API-Key": "chief-secret"}).json()
     decided = client.post(

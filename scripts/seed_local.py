@@ -65,6 +65,18 @@ def main() -> int:
                 "subject_type": "order",
                 "subject_id": "paper-order-preview-600519",
                 "evidence_refs": ["paper-signal-1", "paper-risk-1"],
+                "binding": {
+                    "market": "A_SHARE",
+                    "account_id": "paper-a-share-001",
+                    "symbol": "600519.SH",
+                    "side": "BUY",
+                    "order_type": "MARKET",
+                    "quantity": "100",
+                    "strategy_version": "0.1.0-paper",
+                    "signal_snapshot_id": "paper-signal-1",
+                    "risk_snapshot_id": "paper-risk-1",
+                    "valid_until": "2030-01-01T00:00:00Z",
+                },
             },
         )
         appr2 = post(

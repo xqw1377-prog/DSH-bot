@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/intelligence/shadow.recorded.json",
+  "title": "IntelligenceShadowRecorded",
+  "type": "object",
+  "required": [
+    "item_id",
+    "task_id",
+    "market",
+    "action",
+    "confidence"
+  ],
+  "properties": {
+    "item_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "market": { "type": "string" },
+    "symbol": { "type": ["string", "null"] },
+    "action": { "type": "string" },
+    "confidence": { "type": "number" }
+  },
+  "additionalProperties": true
+}

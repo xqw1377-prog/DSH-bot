@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-bot.local/schemas/intelligence/ingested.json",
+  "title": "IntelligenceIngested",
+  "type": "object",
+  "required": [
+    "item_id",
+    "source_id",
+    "market",
+    "title",
+    "published_at"
+  ],
+  "properties": {
+    "item_id": { "type": "string" },
+    "source_id": { "type": "string" },
+    "market": { "type": "string" },
+    "symbol": { "type": ["string", "null"] },
+    "title": { "type": "string" },
+    "source_url": { "type": ["string", "null"] },
+    "published_at": { "type": "string" }
+  },
+  "additionalProperties": true
+}

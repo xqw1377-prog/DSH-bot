@@ -59,6 +59,19 @@ def _new_idempotency_key(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex}"
 
 
+def _parse_persisted_valid_until(raw: str | None) -> datetime:
+    """解析预览时持久化的 valid_until；缺失时退回「当前 +10 分钟」。
+    退回值只是兜底：审批绑定里持久化的 valid_until 与下单意图必须一致，
+    不一致会被网关以 APPROVAL_INTENT_MISMATCH 拒绝（失败关闭）。
+    """
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw))
+        except ValueError:
+            pass
+    return datetime.now(UTC) + timedelta(minutes=10)
+
+
 class TradeExecutionCore:
     UNKNOWN_QUARANTINE_SECONDS = 600.0
     APPROVAL_TTL_MINUTES = 30
@@ -160,6 +173,12 @@ class TradeExecutionCore:
 
     def _advance_awaiting(self, session: BotSession, task: dict) -> None:
         approval_id = task["approval_id"]
+        # 已进入提交态的任务不再重新查审批：一次性消费与幂等键由网关裁决；
+        # 崩溃/重放时走幂等认领（DUPLICATE_ORDER -> 采纳既有订单），
+        # 防止「审批被消费后重放任务卡死」。
+        if task["status"] in ("APPROVED_SUBMITTING", "SUBMISSION_UNKNOWN"):
+            self._submit(session, task)
+            return
         try:
             session.use("query_approvals")
             approval = self.gateway.get_approval(approval_id)
@@ -342,6 +361,7 @@ class TradeExecutionCore:
             intent = OrderIntent.model_validate(persisted)
             self._dispatch_submit(session, task, intent)
             return
+        valid_until = _parse_persisted_valid_until(signal.get("valid_until"))
         intent = OrderIntent(
             idempotency_key=task["idempotency_key"],
             market=self.market,
@@ -351,10 +371,11 @@ class TradeExecutionCore:
             symbol=signal["symbol"],
             side=OrderSide(signal["side"]),
             quantity=signal.get("quantity", "0.01"),
-            valid_until=datetime.now(UTC) + timedelta(minutes=10),
+            valid_until=valid_until,
             signal_snapshot_id=signal["signal_id"],
             risk_snapshot_id=signal["risk_snapshot_id"],
             approval_id=task["approval_id"],
+            order_type="MARKET",
         )
         payload = dict(signal)
         payload["order_intent"] = intent.model_dump(mode="json")
@@ -884,6 +905,7 @@ class TradeExecutionCore:
             risk_budget_delta=str(risk.get("risk_budget_delta", "0")),
             worst_case_loss=str(risk.get("worst_case_loss", "0")),
             quantity=str(intent.quantity),
+            valid_until=intent.valid_until.isoformat(),
             idempotency_key=_new_idempotency_key(self.idempotency_prefix),
             reconcile_baseline={
                 "position_quantity": baseline_position,
@@ -910,16 +932,34 @@ class TradeExecutionCore:
 
     def _request_approval(self, session: BotSession, task_id: str,
                           signal: dict) -> str | None:
+        task_row = session.tasks.get(task_id)
+        payload = dict(task_row["payload"])
+        binding = {
+            "market": self.market.value,
+            "account_id": self.account_id,
+            "symbol": payload.get("symbol", signal["symbol"]),
+            "side": payload.get("side", signal["side"]),
+            "order_type": "MARKET",
+            "quantity": payload.get("quantity", signal.get("quantity", "0.01")),
+            "limit_price": None,
+            "strategy_version": payload.get(
+                "strategy_version", signal["strategy_version"]
+            ),
+            "signal_snapshot_id": payload.get("signal_id", signal["signal_id"]),
+            "risk_snapshot_id": payload.get("risk_snapshot_id"),
+            "valid_until": payload.get("valid_until"),
+        }
         try:
             approval_id = self.approvals.request(
                 market=self.market.value,
                 requested_by_bot=self.name,
                 subject_type="order",
-                subject_id=signal["signal_id"],
+                subject_id=payload.get("signal_id", signal["signal_id"]),
                 evidence_refs=[
                     f"signal:{signal['signal_id']}",
                     f"strategy:{signal['strategy_id']}@{signal['strategy_version']}",
                 ],
+                binding=binding,
             )
         except Exception as exc:
             session.tasks.transition(task_id, "PRE_SUBMIT_FAILED")

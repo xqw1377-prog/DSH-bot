@@ -238,6 +238,9 @@ def test_expired_approval_never_executes():
         approval["requested_at"] = (
             datetime.now(UTC) - timedelta(minutes=31)
         ).isoformat()
+        approval["expires_at"] = (
+            datetime.now(UTC) - timedelta(minutes=1)
+        ).isoformat()
         conn.execute(
             "UPDATE approvals SET payload = ? WHERE approval_id = ?",
             (json.dumps(approval), task["approval_id"]),

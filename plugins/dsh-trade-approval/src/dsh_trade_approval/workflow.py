@@ -50,15 +50,19 @@ class ApprovalWorkflow:
         subject_type: str,
         subject_id: str,
         evidence_refs: list[str] | None = None,
+        binding: dict | None = None,
     ) -> str:
         """创建审批请求，返回 approval_id。Bot 只能走到这一步。"""
-        resp = self._client.post("/v1/approvals", json={
+        body = {
             "market": market,
             "requested_by_bot": requested_by_bot,
             "subject_type": subject_type,
             "subject_id": subject_id,
             "evidence_refs": evidence_refs or [],
-        })
+        }
+        if binding is not None:
+            body["binding"] = binding
+        resp = self._client.post("/v1/approvals", json=body)
         resp.raise_for_status()
         return resp.json()["approval_id"]
 
@@ -98,13 +102,15 @@ class ApprovalWorkflow:
         subject_type: str,
         subject_id: str,
         evidence_refs: list[str] | None = None,
+        binding: dict | None = None,
         poll_interval: float = 2.0,
         max_wait_seconds: float = 300.0,
     ) -> ApprovalOutcome:
         """请求审批并等待决定（组合入口）。"""
         try:
             approval_id = self.request(
-                market, requested_by_bot, subject_type, subject_id, evidence_refs
+                market, requested_by_bot, subject_type, subject_id,
+                evidence_refs, binding,
             )
         except httpx.HTTPError as exc:
             return ApprovalOutcome("", "ERROR", f"request failed: {exc}")

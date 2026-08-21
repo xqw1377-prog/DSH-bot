@@ -99,6 +99,8 @@ class OrderIntent(_Contract):
     signal_snapshot_id: str
     risk_snapshot_id: str
     approval_id: str | None = None
+    order_type: str | None = None
+    limit_price: Decimal | None = None
 
 
 class OrderPreview(_Contract):
@@ -119,6 +121,12 @@ class Approval(_Contract):
     subject_type: str  # order | strategy_promotion | risk_budget | control_action
     subject_id: str
     evidence_refs: list[str] = Field(default_factory=list)
+    intent_digest: str | None = None
+    expires_at: datetime | None = None
+    consumed_key: str | None = None
+    consumed_request_hash: str | None = None
+    consumed_order_id: str | None = None
+    consumed_at: datetime | None = None
 
 
 class Experiment(_Contract):

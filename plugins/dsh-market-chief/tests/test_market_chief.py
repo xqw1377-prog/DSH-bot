@@ -176,8 +176,8 @@ def test_pending_approvals_become_todo():
     client.post("/v1/approvals", json={
         "market": "CRYPTO",
         "requested_by_bot": "crypto-bot",
-        "subject_type": "order",
-        "subject_id": "sig-001",
+        "subject_type": "control_action",
+        "subject_id": "pause-strategy-001",
         "evidence_refs": ["signal:sig-001"],
     })
 

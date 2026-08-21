@@ -31,6 +31,18 @@
     "open_incidents": {
       "type": "integer",
       "description": "未决事故数（opened - resolved/mitigated，近似）"
+    },
+    "intelligence": {
+      "type": "object",
+      "description": "主动情报汇总：总量、高优先级计数、前几条重点情报。",
+      "additionalProperties": true
+    },
+    "latest_audits": {
+      "type": "array",
+      "description": "最近结构化审计报告。",
+      "items": {
+        "type": "object"
+      }
     }
   },
   "additionalProperties": false
