@@ -306,6 +306,55 @@ def _importance(raw: dict, *, held: bool, watched: bool, authority: str) -> floa
     return max(0.0, min(base + extra, 1.0))
 
 
+# Shadow 建议延迟 SLA:事件发布 → Shadow 建议形成的目标上限。
+# 超过即计入日报 latency.violations(5 分钟轮询下的合理目标)。
+SHADOW_LATENCY_SLA_SECONDS = 900.0
+
+
+def _latency_stats(samples: list[float], *, no_evidence: int = 0) -> dict:
+    """Shadow 延迟统计:p50/p95/max + SLA 违约数(验收:重要事件按时形成 Shadow)。"""
+    if not samples:
+        return {
+            "samples": 0, "p50_seconds": None, "p95_seconds": None,
+            "max_seconds": None, "sla_seconds": SHADOW_LATENCY_SLA_SECONDS,
+            "sla_violations": 0, "no_evidence_items": no_evidence,
+        }
+    ordered = sorted(samples)
+
+    def pct(fraction: float) -> float:
+        import math
+        idx = max(0, math.ceil(fraction * len(ordered)) - 1)
+        return round(ordered[idx], 1)
+
+    return {
+        "samples": len(ordered),
+        "p50_seconds": pct(0.50),
+        "p95_seconds": pct(0.95),
+        "max_seconds": round(ordered[-1], 1),
+        "sla_seconds": SHADOW_LATENCY_SLA_SECONDS,
+        "sla_violations": sum(
+            1 for s in ordered if s > SHADOW_LATENCY_SLA_SECONDS
+        ),
+        "no_evidence_items": no_evidence,
+    }
+
+
+def _event_latency_seconds(published_at: str | None, observed_at: str | None) -> float | None:
+    """事件发布 → 观测(Shadow 形成)的延迟;不可解析返回 None。"""
+    if not published_at or not observed_at:
+        return None
+    try:
+        pub = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+        obs = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if pub.tzinfo is None:
+        pub = pub.replace(tzinfo=UTC)
+    if obs.tzinfo is None:
+        obs = obs.replace(tzinfo=UTC)
+    return round((obs - pub).total_seconds(), 1)
+
+
 def _shadow_why(payload: dict) -> str:
     relation = (
         "与当前持仓直接相关"
@@ -534,6 +583,11 @@ class BotIntelligenceJob:
             "tags": raw.get("tags") or [],
         }
         payload["follow_up"] = _assess_checkpoints(payload)
+        # 延迟 SLA 度量:必须在入库前写入,payload 会整体序列化存档
+        payload["latency_seconds"] = _event_latency_seconds(
+            published_at, payload["observed_at"]
+        )
+        payload["latency_sla_seconds"] = SHADOW_LATENCY_SLA_SECONDS
         item_id, inserted = session.intelligence.upsert(
             dedupe_key=dedupe_key,
             market=self.market,
@@ -600,7 +654,12 @@ class BotIntelligenceJob:
         payload["requires_approval"] = needs_approval
         payload["event_id"] = raw.get("event_id")
         payload["event_type"] = raw.get("event_type")
-        if inserted and importance >= 0.55 and lane_allows_shadow(lane):
+        has_evidence = bool(payload.get("evidence_refs"))
+        if not has_evidence:
+            # 无证据不成决策:即使 importance 达标也只观察,不形成 Shadow
+            payload["no_shadow_reason"] = "missing_evidence"
+        if (inserted and importance >= 0.55 and lane_allows_shadow(lane)
+                and has_evidence):
             self._record_shadow(session, payload)
         elif inserted:
             self._write_ledger(session, payload, task_id=None, status="OBSERVE")
@@ -621,6 +680,8 @@ class BotIntelligenceJob:
                 "event_url": payload.get("source_url"),
                 "price_at_event": payload.get("price_at_event"),
                 "intelligence_item_id": payload["item_id"],
+                "latency_seconds": payload.get("latency_seconds"),
+                "latency_sla_seconds": payload.get("latency_sla_seconds"),
                 "intelligence_follow_up": payload.get("follow_up"),
                 "shadow_decision": build_shadow_decision(
                     {
@@ -659,6 +720,12 @@ class BotIntelligenceJob:
                     "symbol": payload.get("symbol"),
                     "action": payload.get("action"),
                     "confidence": payload.get("confidence"),
+                    "latency_seconds": payload.get("latency_seconds"),
+                    "latency_sla_seconds": payload.get("latency_sla_seconds"),
+                    "sla_breached": (
+                        payload.get("latency_seconds") is not None
+                        and payload["latency_seconds"] > SHADOW_LATENCY_SLA_SECONDS
+                    ),
                 },
             )
         self._write_ledger(session, payload, task_id=task_id, status="SHADOW")
@@ -697,7 +764,13 @@ class BotIntelligenceJob:
                     event_type=str(payload.get("event_type") or ""),
                 ),
                 "evidence_refs": payload.get("evidence_refs") or [],
-                "payload": {"can_apply": False, "live_blocked": True},
+                "payload": {
+                    "can_apply": False,
+                    "live_blocked": True,
+                    "latency_seconds": payload.get("latency_seconds"),
+                    "latency_sla_seconds": payload.get("latency_sla_seconds"),
+                    "no_shadow_reason": payload.get("no_shadow_reason"),
+                },
             }
         )
 
@@ -742,11 +815,18 @@ class StrategyAuditorJob:
         source_stats: dict[str, dict] = {}
         follow_done = 0
         follow_correct = 0
+        latency_samples: list[float] = []
+        no_evidence = 0
         for item in items:
             payload = item.get("payload") or {}
             source = str(item.get("source_id") or "unknown")
             stat = source_stats.setdefault(source, {"count": 0, "correct": 0, "done": 0})
             stat["count"] += 1
+            if payload.get("no_shadow_reason") == "missing_evidence":
+                no_evidence += 1
+            sample = payload.get("latency_seconds")
+            if isinstance(sample, (int, float)) and sample >= 0:
+                latency_samples.append(float(sample))
             for checkpoint in payload.get("follow_up") or []:
                 if checkpoint.get("verdict") in {"CORRECT", "WRONG"}:
                     stat["done"] += 1
@@ -794,6 +874,7 @@ class StrategyAuditorJob:
                 ),
             },
             "top_sources": top_sources,
+            "latency": _latency_stats(latency_samples, no_evidence=no_evidence),
             "suggestions": [
                 {
                     "title": "继续保持 Shadow-only 验证链路",

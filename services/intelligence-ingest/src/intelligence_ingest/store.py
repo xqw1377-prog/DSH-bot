@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT,
     market TEXT
 );
+CREATE TABLE IF NOT EXISTS source_health (
+    source_id TEXT PRIMARY KEY,
+    last_attempt_at TEXT,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_documents INTEGER NOT NULL DEFAULT 0,
+    last_recovery_at TEXT
+);
 CREATE TABLE IF NOT EXISTS events (
     event_id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -112,6 +122,64 @@ class IntelligenceStore:
         self._conn.commit()
         return event
 
+    def record_source_result(self, source_id: str, *, ok: bool,
+                             error: str | None = None,
+                             documents: int = 0,
+                             now: str | None = None) -> dict[str, Any]:
+        """记录一次源采集结果;成功且此前连续失败>0 视为恢复(记 last_recovery_at)。
+
+        采集源是 RSS/Atom 这类「拉最近条目」的模型:成功的那一拉本身就是
+        补采——恢复即补采,无需独立的 backfill 通道。
+        """
+        from intelligence_ingest.documents import utc_now
+
+        ts = now or utc_now()
+        row = self._conn.execute(
+            "SELECT consecutive_failures FROM source_health WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        prev_failures = row["consecutive_failures"] if row else 0
+        recovered = ok and prev_failures > 0
+        self._conn.execute(
+            """
+            INSERT INTO source_health (
+                source_id, last_attempt_at, last_success_at, last_failure_at,
+                consecutive_failures, last_error, last_documents, last_recovery_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_id) DO UPDATE SET
+                last_attempt_at = excluded.last_attempt_at,
+                last_success_at = COALESCE(excluded.last_success_at, source_health.last_success_at),
+                last_failure_at = COALESCE(excluded.last_failure_at, source_health.last_failure_at),
+                consecutive_failures = excluded.consecutive_failures,
+                last_error = excluded.last_error,
+                last_documents = excluded.last_documents,
+                last_recovery_at = COALESCE(excluded.last_recovery_at, source_health.last_recovery_at)
+            """,
+            (
+                source_id, ts,
+                ts if ok else None,
+                None if ok else ts,
+                0 if ok else prev_failures + 1,
+                None if ok else (error or "unknown error")[:500],
+                documents if ok else 0,
+                ts if recovered else None,
+            ),
+        )
+        self._conn.commit()
+        return self.get_source_health(source_id)
+
+    def get_source_health(self, source_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM source_health WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_source_health(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM source_health ORDER BY source_id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def recent_documents(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM documents ORDER BY fetched_at DESC LIMIT ?",
@@ -142,6 +210,7 @@ class IntelligenceStore:
             "disclaimer": "只进入 Shadow。没有原文存证的记录不会评分。不能直接下单。",
             "documents": self.recent_documents(80),
             "events": self.recent_events(80),
+            "source_health": self.list_source_health(),
         }
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".tmp")

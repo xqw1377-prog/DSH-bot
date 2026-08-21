@@ -59,17 +59,38 @@ def ingest_once(
     events = 0
     errors: list[str] = []
     skipped: list[str] = []
+    recoveries: list[str] = []
     for source in sources:
         if source.method in {"PLAYWRIGHT", "SELENIUM", "X_BROWSER"}:
             raise IsolationError(f"refusing forbidden collector {source.method}")
         if source.method == "X_FILTERED_STREAM":
             skipped.append(f"{source.id}: waiting for X_BEARER_TOKEN")
             continue
+        # 速率约束:距上次尝试不足 min_interval_seconds 的源本轮跳过
+        interval = getattr(source, "min_interval_seconds", 0) or 0
+        if interval > 0:
+            health = db.get_source_health(source.id)
+            last_attempt = (health or {}).get("last_attempt_at")
+            if last_attempt:
+                try:
+                    from datetime import datetime, timezone
+                    from intelligence_ingest.documents import utc_now as _now
+                    prev = datetime.fromisoformat(str(last_attempt).replace("Z", "+00:00"))
+                    cur = datetime.fromisoformat(_now().replace("Z", "+00:00"))
+                    if (cur - prev).total_seconds() < interval:
+                        skipped.append(
+                            f"{source.id}: rate-limited (min_interval={interval}s)"
+                        )
+                        continue
+                except ValueError:
+                    pass  # 时间不可解析则不拦,交给失败关闭的错误路径
+        source_docs = 0
         try:
             fetched = fetch_source(source, http)
             for doc in collect_source(source, fetched):
                 db.upsert_document(doc)
                 documents += 1
+                source_docs += 1
                 extracted = extract_event(doc)
                 if extracted is None:
                     continue
@@ -82,6 +103,17 @@ def ingest_once(
             raise
         except Exception as exc:
             errors.append(f"{source.id}: {exc}")
+            db.record_source_result(source.id, ok=False, error=str(exc))
+            continue
+        after = db.record_source_result(
+            source.id, ok=True, documents=source_docs
+        )
+        if after and after.get("last_recovery_at") == after.get("last_success_at"):
+            # 恢复即补采:RSS/Atom 拉取最近条目,成功的一拉已覆盖中断窗口
+            recoveries.append(
+                f"{source.id}: recovered after "
+                f"{after.get('consecutive_failures', 0)} failure(s); catch-up fetch done"
+            )
     dest = _snapshot_path(snapshot_dir)
     snapshot = db.export_snapshot(dest) if dest else None
     return {
@@ -90,6 +122,8 @@ def ingest_once(
         "events": events,
         "errors": errors,
         "skipped": skipped,
+        "recoveries": recoveries,
+        "source_health": db.list_source_health(),
         "mode": "SHADOW",
         "snapshot": str(dest) if dest else None,
         "held_assets": held,

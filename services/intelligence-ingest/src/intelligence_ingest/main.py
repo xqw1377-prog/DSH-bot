@@ -48,6 +48,16 @@ def list_events(limit: int = 50) -> list[dict]:
     return IntelligenceStore().recent_events(limit)
 
 
+@app.get("/v1/source-health")
+def source_health() -> list[dict]:
+    """源健康状态:连续失败、最近成功/失败时间、恢复时间。
+
+    连续失败 > 0 的源即「中断」,恢复时间非空表示已补采恢复
+    (RSS/Atom 拉取最近条目,成功的一拉即覆盖中断窗口)。
+    """
+    return IntelligenceStore().list_source_health()
+
+
 @app.post("/v1/ingest")
 def run_ingest(include_derived: bool = False) -> dict:
     try:

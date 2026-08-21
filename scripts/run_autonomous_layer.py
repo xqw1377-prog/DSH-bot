@@ -60,9 +60,58 @@ def main() -> int:
     if args.once:
         print(json.dumps(cycle(), ensure_ascii=False, indent=2))
         return 0
+    run_forever(cycle, base_interval=max(args.every, 60))
+
+
+def run_forever(cycle, *, base_interval: float, sleep=None, log=None) -> None:
+    """24h 无人值守主循环:单轮异常绝不杀死循环。
+
+    连续失败按 1x→2x→...→10x 退避(上限 base_interval 的 10 倍),
+    成功后恢复正常间隔;每轮输出 status/duration/failures 便于观测。
+    sleep/log 可注入以便测试。
+    """
+    do_sleep = sleep or time.sleep
+    emit = log or (lambda payload: print(json.dumps(payload, ensure_ascii=False), flush=True))
+    base_interval = max(base_interval, 1.0)
+    interval = base_interval
+    failures = 0
     while True:
-        print(json.dumps(cycle(), ensure_ascii=False), flush=True)
-        time.sleep(max(args.every, 60))
+        started = time.monotonic()
+        try:
+            result = cycle()
+            failures = 0
+            interval = base_interval
+            result["_loop"] = {
+                "status": "ok",
+                "duration_seconds": round(time.monotonic() - started, 1),
+                "consecutive_failures": 0,
+            }
+            emit(result)
+            do_sleep(interval)
+        except KeyboardInterrupt:
+            raise
+        except StopLoop:
+            return
+        except Exception as exc:  # noqa: BLE001 循环守护:记录并继续
+            failures += 1
+            interval = min(base_interval * min(failures, 10), base_interval * 10)
+            emit({
+                "_loop": {
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "duration_seconds": round(time.monotonic() - started, 1),
+                    "consecutive_failures": failures,
+                    "next_interval_seconds": interval,
+                },
+            })
+            try:
+                do_sleep(interval)
+            except StopLoop:
+                return
+
+
+class StopLoop(Exception):
+    """测试辅助:由注入的 sleep 抛出以结束循环。"""
 
 
 if __name__ == "__main__":
