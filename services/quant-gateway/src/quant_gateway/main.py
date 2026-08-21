@@ -50,3 +50,8 @@ app.include_router(audit.router, prefix="/v1", tags=["audit"])
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "quant-gateway"}
+
+# Prometheus 指标：infra/observability/prometheus.yml 抓取 /metrics
+from prometheus_client import make_asgi_app  # noqa: E402
+
+app.mount("/metrics", make_asgi_app())

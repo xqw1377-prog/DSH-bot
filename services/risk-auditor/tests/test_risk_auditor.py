@@ -73,3 +73,18 @@ def test_conclusion_survives_restart(tmp_path, monkeypatch):
     again = client.post("/v1/audit-promotion", json=_req()).json()
     assert again["conclusion_id"] == first["conclusion_id"]
     assert again["idempotent"] is True
+
+
+def test_fail_on_single_sourced_evidence():
+    refs = ["backtest:a", "backtest:b", "backtest:c"]
+    r = client.post("/v1/audit-promotion", json=_req(
+        evidence_refs=refs, evidence_hash=storage.evidence_hash(refs)))
+    assert r.json()["verdict"] == "FAIL"
+    assert "single-sourced" in r.json()["reason"]
+
+
+def test_pass_with_mixed_source_evidence():
+    refs = ["backtest:a", "shadow:b", "paper:c"]
+    r = client.post("/v1/audit-promotion", json=_req(
+        evidence_refs=refs, evidence_hash=storage.evidence_hash(refs)))
+    assert r.json()["verdict"] == "PASS"

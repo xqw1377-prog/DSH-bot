@@ -62,7 +62,7 @@ def _agent(gateway, mode="shadow", market=Market.CRYPTO, name="crypto-bot", **kw
         market=market,
         gateway=gateway,
         approvals=object(),
-        account_id="paper-crypto-001" if market == Market.CRYPTO else "paper-a-share-001",
+        account_id="crypto-paper-1" if market == Market.CRYPTO else "paper-a-share-001",
         mode=mode,
         now_fn=lambda: NOW,
         **kwargs,

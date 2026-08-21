@@ -63,7 +63,7 @@ uvicorn risk_policy.main:app --host 127.0.0.1 --port 8003 &
 pids+=($!)
 uvicorn projection_api.main:app --host 127.0.0.1 --port 8004 &
 pids+=($!)
-uvicorn dsh_risk_auditor.service:app --host 127.0.0.1 --port 8005 &
+uvicorn risk_auditor.main:app --host 127.0.0.1 --port 8005 &
 pids+=($!)
 
 echo "production backends on 8001-8005 (paper=off env=$DSH_ENV)"

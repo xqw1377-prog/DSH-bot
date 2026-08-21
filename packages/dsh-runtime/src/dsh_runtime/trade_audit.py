@@ -43,6 +43,7 @@ def load_closed_trades(snapshot_dir: str | Path | None, market: str) -> list[dic
 def ingest_and_audit_trades(session, *, market: str, trades: list[dict]) -> dict[str, Any]:
     linked = 0
     imported = 0
+    decision_ids: list[str] = []
     for trade in trades:
         fill_id = str(trade.get("source_trade_id") or trade.get("fill_id") or "")
         if not fill_id:
@@ -61,8 +62,9 @@ def ingest_and_audit_trades(session, *, market: str, trades: list[dict]) -> dict
                 trade=trade,
             )
             linked += 1
+            decision_ids.append(existing["decision_id"])
             continue
-        session.ledger.upsert(
+        decision_id, _ = session.ledger.upsert(
             {
                 "market": market,
                 "symbol": trade.get("symbol"),
@@ -95,6 +97,9 @@ def ingest_and_audit_trades(session, *, market: str, trades: list[dict]) -> dict
             }
         )
         imported += 1
+        decision_ids.append(decision_id)
+    for decision_id in decision_ids:
+        _ensure_episode(session, market=market, decision_id=decision_id)
     audited = 0
     for row in session.ledger.list(limit=500):
         trade = (row.get("payload") or {}).get("trade")
@@ -112,17 +117,74 @@ def ingest_and_audit_trades(session, *, market: str, trades: list[dict]) -> dict
         period_key=now.date().isoformat(),
         created_at=now.isoformat(),
     )
+    saved_candidates = _persist_candidates(
+        session, market=market, pipeline=pipeline, period_key=now.date().isoformat()
+    )
     return {
         "linked": linked,
         "imported": imported,
         "audited": audited,
         "candidates": pipeline["candidates"],
+        "candidate_ids": saved_candidates,
         "pipeline": pipeline,
         "coverage": session.ledger.coverage(),
         "mae_mfe": False,
         "can_apply": False,
         "trade_blocked": True,
     }
+
+
+def _ensure_episode(session, *, market: str, decision_id: str) -> None:
+    """每笔已成交决策必须有回合；已平仓的回填退出事实，不编造。"""
+    row = session.ledger.get(decision_id)
+    if row is None:
+        return
+    trade = (row.get("payload") or {}).get("trade") or {}
+    episode_id = session.ledger.open_episode(
+        decision_id,
+        market=market,
+        symbol=str(row.get("symbol") or ""),
+        side=str(row.get("action") or "BUY").upper(),
+        entry_fill_id=row.get("fill_id"),
+        entry_price=trade.get("entry_price"),
+        entry_at=trade.get("opened_at"),
+        quantity=str(trade.get("quantity") or "0"),
+    )
+    episode = session.ledger.get_episode(episode_id)
+    if episode and episode["status"] == "OPEN" and trade.get("closed_at"):
+        session.ledger.close_episode(
+            episode_id,
+            exit_fill_id=str(trade.get("source_trade_id") or trade.get("fill_id") or "") or None,
+            exit_price=trade.get("exit_price"),
+            exit_at=str(trade.get("closed_at")),
+            exit_reason=str(trade.get("exit_reason") or "") or None,
+            realized_pnl=str(trade.get("pnl") or "") or None,
+            fees=str(trade.get("fee") or "0"),
+        )
+
+
+def _persist_candidates(session, *, market: str, pipeline: dict, period_key: str) -> list[str]:
+    """优化候选入账本：稳定 candidate_id，重跑不重复；can_apply 恒为 False。"""
+    saved: list[str] = []
+    for candidate in pipeline.get("candidates") or []:
+        candidate_id = f"opt-{market.lower()}-{candidate['suggestion_id']}-{period_key}"
+        session.ledger.save_candidate({
+            "candidate_id": candidate_id,
+            "market": market,
+            "title": candidate.get("title"),
+            "rule_id": candidate.get("suggestion_id"),
+            "reason": candidate.get("reason"),
+            "actual_pnl": (candidate.get("replay") or {}).get("actual"),
+            "replayed_pnl": (candidate.get("replay") or {}).get("replayed"),
+            "delta_pnl": (candidate.get("replay") or {}).get("delta"),
+            "backtest": candidate.get("backtest") or {},
+            "stage": candidate.get("stage") or "SUGGESTION",
+            "next_stage": candidate.get("next_stage"),
+            "evidence_refs": candidate.get("evidence") or [],
+            "can_apply": False,
+        })
+        saved.append(candidate_id)
+    return saved
 
 
 def score_trade(trade: dict) -> dict[str, Any]:

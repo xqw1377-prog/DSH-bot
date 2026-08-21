@@ -157,8 +157,8 @@ def _connect() -> sqlite3.Connection:
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_open
-            ON position_episodes (bot, decision_id, status);
+        CREATE INDEX IF NOT EXISTS idx_episode_decision
+            ON position_episodes (bot, decision_id);
         CREATE INDEX IF NOT EXISTS idx_episode_bot_updated
             ON position_episodes (bot, updated_at DESC);
 
@@ -763,6 +763,7 @@ class DecisionLedger:
         return self.get(row[0]) if row else None
 
     def _row(self, row: tuple) -> dict:
+        payload = json.loads(row[23] or "{}")
         return {
             "decision_id": row[0],
             "market": row[1],
@@ -787,7 +788,9 @@ class DecisionLedger:
             "exit_plan": json.loads(row[20] or "{}"),
             "evidence_refs": json.loads(row[21] or "[]"),
             "created_at": row[22],
-            "payload": json.loads(row[23] or "{}"),
+            "episode_id": payload.get("episode_id"),
+            "candidate_id": payload.get("candidate_id"),
+            "payload": payload,
         }
 
     def attach_fill(self, decision_id: str, *, fill_id: str, order_id: str | None, trade: dict) -> None:
@@ -837,6 +840,15 @@ class DecisionLedger:
             reconciliation = (row.get("payload") or {}).get("reconciliation") or {}
             if reconciliation.get("reconciliation_status") == "MATCHED":
                 reconciled += 1
+        episodes = _get().execute(
+            "SELECT status, COUNT(*) FROM position_episodes WHERE bot = ? GROUP BY status",
+            (self.bot,),
+        ).fetchall()
+        episode_counts = {status: count for status, count in episodes}
+        candidates = _get().execute(
+            "SELECT COUNT(*) FROM optimization_candidates WHERE bot = ?",
+            (self.bot,),
+        ).fetchone()[0]
         return {
             "decisions": len(rows),
             "fully_linked": len(linked),
@@ -845,7 +857,256 @@ class DecisionLedger:
             "filled": sum(1 for row in rows if row.get("fill_id")),
             "reconciled": reconciled,
             "audited": sum(1 for row in rows if row.get("audit_id")),
+            "episodes_open": episode_counts.get("OPEN", 0),
+            "episodes_closed": episode_counts.get("CLOSED", 0),
+            "candidates": candidates,
         }
+
+    # ---- 持仓回合（PositionEpisode）：成交→持仓→退出与 1h/1d/3d 跟踪 ----
+
+    OUTCOME_KEYS = ("1h", "1d", "3d")
+
+    def open_episode(
+        self,
+        decision_id: str,
+        *,
+        market: str,
+        symbol: str,
+        side: str,
+        entry_fill_id: str | None = None,
+        entry_price: str | None = None,
+        entry_at: str | None = None,
+        quantity: str = "0",
+    ) -> str:
+        """为决策开启回合；同一决策已有回合（无论开闭）时幂等复用，不重复开。
+
+        回合是结果跟踪的锚点：情报决策由此知道自己最后赚没赚钱。
+        """
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        row = conn.execute(
+            "SELECT episode_id FROM position_episodes"
+            " WHERE bot = ? AND decision_id = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (self.bot, decision_id),
+        ).fetchone()
+        if row:
+            return row[0]
+        episode_id = f"ep-{uuid4().hex[:12]}"
+        conn.execute(
+            """
+            INSERT INTO position_episodes (
+                episode_id, bot, decision_id, market, symbol, side,
+                entry_fill_id, entry_price, entry_at, quantity,
+                status, outcomes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', '{}', ?, ?)
+            """,
+            (
+                episode_id, self.bot, decision_id, market, symbol, side,
+                entry_fill_id, entry_price, entry_at, quantity, now, now,
+            ),
+        )
+        self._link_decision_payload(decision_id, episode_id=episode_id)
+        _commit_if_idle(conn)
+        return episode_id
+
+    def close_episode(
+        self,
+        episode_id: str,
+        *,
+        exit_fill_id: str | None = None,
+        exit_price: str | None = None,
+        exit_at: str | None = None,
+        exit_reason: str | None = None,
+        realized_pnl: str | None = None,
+        fees: str | None = None,
+    ) -> dict | None:
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        episode = self.get_episode(episode_id)
+        if episode is None:
+            return None
+        sets = ["status = 'CLOSED'", "updated_at = ?"]
+        params: list = [now]
+        for column, value in (
+            ("exit_fill_id", exit_fill_id),
+            ("exit_price", exit_price),
+            ("exit_at", exit_at),
+            ("exit_reason", exit_reason),
+            ("realized_pnl", realized_pnl),
+            ("fees", fees),
+        ):
+            if value is not None:
+                sets.append(f"{column} = ?")
+                params.append(value)
+        params.append(episode_id)
+        conn.execute(
+            f"UPDATE position_episodes SET {', '.join(sets)} WHERE episode_id = ?",
+            params,
+        )
+        _commit_if_idle(conn)
+        return self.get_episode(episode_id)
+
+    def record_episode_outcome(self, episode_id: str, key: str, value: str) -> dict | None:
+        """回填 1h/1d/3d 观察结果；只接受事实观察值，不得编造。"""
+        if key not in self.OUTCOME_KEYS:
+            raise ValueError(f"outcome key must be one of {self.OUTCOME_KEYS}")
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        row = conn.execute(
+            "SELECT outcomes FROM position_episodes WHERE episode_id = ? AND bot = ?",
+            (episode_id, self.bot),
+        ).fetchone()
+        if row is None:
+            return None
+        outcomes = json.loads(row[0] or "{}")
+        outcomes[key] = value
+        conn.execute(
+            "UPDATE position_episodes SET outcomes = ?, updated_at = ? WHERE episode_id = ?",
+            (json.dumps(outcomes, ensure_ascii=False), now, episode_id),
+        )
+        _commit_if_idle(conn)
+        return self.get_episode(episode_id)
+
+    def get_episode(self, episode_id: str) -> dict | None:
+        row = _get().execute(
+            "SELECT episode_id, decision_id, market, symbol, side, entry_fill_id,"
+            " entry_price, entry_at, quantity, exit_fill_id, exit_price, exit_at,"
+            " exit_reason, realized_pnl, fees, status, outcomes, created_at, updated_at"
+            " FROM position_episodes WHERE episode_id = ? AND bot = ?",
+            (episode_id, self.bot),
+        ).fetchone()
+        return self._episode_row(row) if row else None
+
+    def episodes_for_decision(self, decision_id: str) -> list[dict]:
+        rows = _get().execute(
+            "SELECT episode_id, decision_id, market, symbol, side, entry_fill_id,"
+            " entry_price, entry_at, quantity, exit_fill_id, exit_price, exit_at,"
+            " exit_reason, realized_pnl, fees, status, outcomes, created_at, updated_at"
+            " FROM position_episodes WHERE bot = ? AND decision_id = ?"
+            " ORDER BY created_at DESC",
+            (self.bot, decision_id),
+        ).fetchall()
+        return [self._episode_row(row) for row in rows]
+
+    @staticmethod
+    def _episode_row(row: tuple) -> dict:
+        return {
+            "episode_id": row[0],
+            "decision_id": row[1],
+            "market": row[2],
+            "symbol": row[3],
+            "side": row[4],
+            "entry_fill_id": row[5],
+            "entry_price": row[6],
+            "entry_at": row[7],
+            "quantity": row[8],
+            "exit_fill_id": row[9],
+            "exit_price": row[10],
+            "exit_at": row[11],
+            "exit_reason": row[12],
+            "realized_pnl": row[13],
+            "fees": row[14],
+            "status": row[15],
+            "outcomes": json.loads(row[16] or "{}"),
+            "created_at": row[17],
+            "updated_at": row[18],
+        }
+
+    # ---- 优化候选（OptimizationCandidate）：带反事实数据，受控晋级 ----
+
+    def save_candidate(self, candidate: dict) -> str:
+        """幂等写入优化候选；candidate_id 由规则+周期决定，重跑不重复。"""
+        candidate_id = str(candidate.get("candidate_id") or "")
+        if not candidate_id:
+            raise ValueError("candidate_id is required")
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        payload = {**candidate, "can_apply": False}
+        existing = conn.execute(
+            "SELECT created_at FROM optimization_candidates WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE optimization_candidates SET market = ?, stage = ?, next_stage = ?,"
+                " payload = ?, updated_at = ? WHERE candidate_id = ?",
+                (
+                    candidate.get("market"), candidate.get("stage") or "SUGGESTION",
+                    candidate.get("next_stage"), json.dumps(payload, ensure_ascii=False),
+                    now, candidate_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO optimization_candidates (
+                    candidate_id, bot, market, stage, next_stage,
+                    created_at, updated_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id, self.bot, candidate.get("market"),
+                    candidate.get("stage") or "SUGGESTION",
+                    candidate.get("next_stage"), now, now,
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+        _commit_if_idle(conn)
+        return candidate_id
+
+    def get_candidate(self, candidate_id: str) -> dict | None:
+        row = _get().execute(
+            "SELECT candidate_id, market, stage, next_stage, created_at, updated_at, payload"
+            " FROM optimization_candidates WHERE candidate_id = ? AND bot = ?",
+            (candidate_id, self.bot),
+        ).fetchone()
+        return self._candidate_row(row) if row else None
+
+    def list_candidates(self, *, market: str | None = None, limit: int = 50) -> list[dict]:
+        sql = (
+            "SELECT candidate_id, market, stage, next_stage, created_at, updated_at, payload"
+            " FROM optimization_candidates WHERE bot = ?"
+        )
+        params: list = [self.bot]
+        if market:
+            sql += " AND market = ?"
+            params.append(market)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        rows = _get().execute(sql, params).fetchall()
+        return [self._candidate_row(row) for row in rows]
+
+    @staticmethod
+    def _candidate_row(row: tuple) -> dict:
+        payload = json.loads(row[6] or "{}")
+        return {
+            "candidate_id": row[0],
+            "market": row[1],
+            "stage": row[2],
+            "next_stage": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            **{k: v for k, v in payload.items() if k != "candidate_id"},
+        }
+
+    def _link_decision_payload(self, decision_id: str, **fields) -> None:
+        """把链路 ID（episode_id/candidate_id）回填到决策 payload。"""
+        conn = _get()
+        now = datetime.now(UTC).isoformat()
+        row = conn.execute(
+            "SELECT payload FROM decision_ledger WHERE decision_id = ? AND bot = ?",
+            (decision_id, self.bot),
+        ).fetchone()
+        if row is None:
+            return
+        payload = json.loads(row[0] or "{}")
+        payload.update(fields)
+        conn.execute(
+            "UPDATE decision_ledger SET payload = ?, updated_at = ?"
+            " WHERE decision_id = ? AND bot = ?",
+            (json.dumps(payload, ensure_ascii=False), now, decision_id, self.bot),
+        )
 
 
 class EventLog:

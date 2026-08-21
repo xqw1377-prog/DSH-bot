@@ -233,3 +233,123 @@ def test_replay_stop_1r_stays_suggestion():
     assert items[0]["can_apply"] is False
     assert items[0]["next_stage"] == "BACKTEST"
     assert "delta" in items[0]["evidence"][3]
+
+
+def test_closed_trade_opens_and_closes_episode_with_chain():
+    """第一刀链路：成交 → 决策 → 回合（含退出事实）→ 审计 → 优化候选。"""
+    reset()
+    session = BotSession.for_profile(load_profile(PROFILES / "crypto-bot" / "profile.yaml"))
+    result = ingest_and_audit_trades(
+        session,
+        market="CRYPTO",
+        trades=[
+            {
+                "symbol": "ETHUSDT",
+                "side": "SELL",
+                "source_trade_id": "life-ep-1",
+                "signal_id": "sig-ep-1",
+                "order_id": "ord-ep-1",
+                "entry_price": "2000",
+                "exit_price": "1900",
+                "quantity": "1",
+                "pnl": "40",
+                "pnl_r": "0.8",
+                "fee": "0.4",
+                "exit_reason": "移动止盈",
+                "signal_type": "V5",
+                "opened_at": "2026-08-19T00:00:00+00:00",
+                "closed_at": "2026-08-19T03:00:00+00:00",
+            }
+        ],
+    )
+    row = session.ledger.list()[0]
+    # 决策行暴露回合链路 ID
+    assert row["episode_id"]
+    episode = session.ledger.get_episode(row["episode_id"])
+    assert episode["status"] == "CLOSED"
+    assert episode["entry_fill_id"] == "life-ep-1"
+    assert episode["entry_price"] == "2000"
+    assert episode["exit_at"] == "2026-08-19T03:00:00+00:00"
+    assert episode["exit_reason"] == "移动止盈"
+    assert episode["realized_pnl"] == "40"
+    # 回合幂等：重跑不另开回合
+    again = ingest_and_audit_trades(
+        session,
+        market="CRYPTO",
+        trades=[
+            {
+                "symbol": "ETHUSDT",
+                "side": "SELL",
+                "source_trade_id": "life-ep-1",
+                "signal_id": "sig-ep-1",
+                "pnl": "40",
+                "pnl_r": "0.8",
+                "fee": "0.4",
+            }
+        ],
+    )
+    assert again["linked"] == 1
+    assert len(session.ledger.episodes_for_decision(row["decision_id"])) == 1
+    # 1h/1d/3d 结果回填只接受事实观察值
+    tracked = session.ledger.record_episode_outcome(episode["episode_id"], "1d", "+1.2% vs 入场价")
+    assert tracked["outcomes"]["1d"] == "+1.2% vs 入场价"
+    try:
+        session.ledger.record_episode_outcome(episode["episode_id"], "5m", "nope")
+        raise AssertionError("invalid outcome key accepted")
+    except ValueError:
+        pass
+    coverage = session.ledger.coverage()
+    assert coverage["episodes_closed"] == 1
+    assert coverage["episodes_open"] == 0
+    # 优化候选入账本：带反事实数据，重跑幂等，can_apply 恒 False
+    assert result["candidate_ids"] or not result["candidates"]
+    for candidate_id in result["candidate_ids"]:
+        saved = session.ledger.get_candidate(candidate_id)
+        assert saved["can_apply"] is False
+        assert saved["actual_pnl"] or saved["actual_pnl"] == "0"
+    before = set(result["candidate_ids"])
+    rerun = ingest_and_audit_trades(
+        session, market="CRYPTO",
+        trades=[{
+            "symbol": "ETHUSDT", "side": "SELL", "source_trade_id": "life-ep-1",
+            "signal_id": "sig-ep-1", "pnl": "40", "pnl_r": "0.8", "fee": "0.4",
+        }],
+    )
+    assert set(rerun["candidate_ids"]) == before
+    reset()
+
+
+def test_optimization_candidates_persist_with_counterfactual():
+    """优化候选必须带反事实数据入账本，重跑不重复，不可直接应用。"""
+    reset()
+    session = BotSession.for_profile(load_profile(PROFILES / "crypto-bot" / "profile.yaml"))
+    trades = []
+    for index in range(6):
+        pnl = "-30" if index % 2 else "10"
+        trades.append(
+            {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "source_trade_id": f"life-c-{index}",
+                "signal_id": f"sig-c-{index}",
+                "pnl": pnl,
+                "pnl_r": "-3" if pnl == "-30" else "1",
+                "fee": "0.4",
+                "opened_at": f"2026-08-1{index}T00:00:00+00:00",
+                "closed_at": f"2026-08-1{index}T06:00:00+00:00",
+            }
+        )
+    result = ingest_and_audit_trades(session, market="CRYPTO", trades=trades)
+    assert result["candidate_ids"], "足量样本下必须产出优化候选"
+    for candidate_id in result["candidate_ids"]:
+        saved = session.ledger.get_candidate(candidate_id)
+        assert saved is not None
+        assert saved["can_apply"] is False
+        # 反事实数据不是凭空建议：重放实际/回放值必须在场
+        assert saved["actual_pnl"] is not None
+        assert saved["replayed_pnl"] is not None
+        assert saved["evidence_refs"]
+    rerun = ingest_and_audit_trades(session, market="CRYPTO", trades=trades)
+    assert set(rerun["candidate_ids"]) == set(result["candidate_ids"])
+    assert len(session.ledger.list_candidates(market="CRYPTO")) == len(result["candidate_ids"])
+    reset()

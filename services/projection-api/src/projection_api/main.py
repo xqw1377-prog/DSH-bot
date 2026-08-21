@@ -729,3 +729,8 @@ def chief_query(
     lines.append("以上来自 Runtime 投影，不含资金动作。")
     return {"role": "chief", "refused": False, "text": "\n".join(lines)}
 
+
+# Prometheus 指标：infra/observability/prometheus.yml 抓取 /metrics
+from prometheus_client import make_asgi_app  # noqa: E402
+
+app.mount("/metrics", make_asgi_app())

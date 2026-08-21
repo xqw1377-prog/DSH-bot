@@ -71,7 +71,8 @@ class DrillAdapter(MarketAdapter):
             intent=intent, estimated_cost=notional,
             estimated_slippage=Decimal("0.0005"),
             risk=RiskSnapshot(
-                risk_snapshot_id="rs-drill", market=self.market,
+                risk_snapshot_id=(intent.risk_snapshot_id if not isinstance(intent, dict) else intent["risk_snapshot_id"]),
+                market=self.market,
                 account_id="crypto-paper-1",
                 position_before=self._qty, position_after=self._qty + qty,
                 risk_budget_delta=notional,

@@ -11,6 +11,8 @@ services:
       - PYTHONPATH=/app/packages/domain-contracts/src:/app/services/quant-gateway/src
       - QUANT_GATEWAY_DB=/data/gateway.db
       - DSH_ENV=production
+      # 二次硬风控：容器内不能用 127.0.0.1，必须指向 risk-policy 服务名
+      - RISK_POLICY_URL=http://risk-policy:8003
       # 生产必须配置 API key，否则网关拒绝启动：
       # QUANT_GATEWAY_API_KEYS="key/name:read,write;..."
       # 只读快照（Shadow 数据源，不是第三种交易所）：
@@ -65,6 +67,8 @@ services:
       - "8004:8004"
     environment:
       - QUANT_GATEWAY_URL=http://quant-gateway:8001
+      # 策略实验/候选代理：容器内必须指向 strategy-evolution 服务名
+      - STRATEGY_EVOLUTION_URL=http://strategy-evolution:8002
       - QUANT_GATEWAY_API_KEY=${QUANT_GATEWAY_API_KEY:-}
       - PROJECTION_API_KEY=${PROJECTION_API_KEY:-}
       - DSH_RUNTIME_DB=/data/runtime.db

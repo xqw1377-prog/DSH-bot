@@ -74,8 +74,9 @@ class SignalFakeAdapter(MarketAdapter):
         return OrderPreview(
             intent=intent, estimated_cost="650", estimated_slippage="0.5",
             risk=RiskSnapshot(
-                risk_snapshot_id="rs-preview", market=self.market,
-                account_id="paper-crypto-001",
+                risk_snapshot_id=(intent.risk_snapshot_id if not isinstance(intent, dict) else intent["risk_snapshot_id"]),
+                market=self.market,
+                account_id="crypto-paper-1",
                 position_before="0", position_after="0.01",
                 risk_budget_delta="6.5", worst_case_loss="6.5",
                 as_of=datetime.now(UTC),
@@ -146,7 +147,7 @@ def _agent_and_session():
 
     from dsh_crypto_agent import CryptoAgent
     agent = CryptoAgent(gateway=gateway, approvals=approvals,
-                        account_id="paper-crypto-001")
+                        account_id="crypto-paper-1")
     profile = load_profile(PROFILES / "crypto-bot" / "profile.yaml")
     return agent, BotSession.for_profile(profile)
 

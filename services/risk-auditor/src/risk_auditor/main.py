@@ -69,10 +69,20 @@ def _evaluate(req: AuditPromotionRequest) -> tuple[str, str]:
             return "FAIL", (
                 f"insufficient independent evidence: {len(distinct)} < "
                 f"{MIN_EVIDENCE_REFS} for {req.to_stage}")
+        # 同源检查：证据需覆盖至少两种来源（backtest: / shadow: / paper: 前缀），
+        # 策略晋级不能只依据单次回测或单一来源。
+        prefixes = {
+            ref.split(":", 1)[0] if ":" in ref else ref for ref in distinct
+        }
+        if len(prefixes) < 2:
+            return "FAIL", (
+                f"evidence is single-sourced (all from {prefixes}); "
+                "promotion cannot rely on a single backtest/source")
         if not req.approval_id:
             return "FAIL", "missing human approval_id for " + req.to_stage
     return "PASS", (
-        f"evidence hash verified with {len(distinct)} distinct refs; "
+        f"evidence hash verified with {len(distinct)} distinct refs "
+        f"from {len(prefixes) if req.to_stage in STAGES_REQUIRING_APPROVAL else 1} sources; "
         f"approval bound")
 
 
