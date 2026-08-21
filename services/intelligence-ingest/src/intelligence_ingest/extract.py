@@ -36,6 +36,30 @@ US_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("US_MARKET_SPILLOVER", ("nasdaq", "nyse", "dow", "s&p")),
 )
 
+# 确定性方向推断：关键词规则，不用 LLM 猜。
+# 风险词优先（保守）；未命中保持 UNCERTAIN——宁可观察，不编方向。
+NEGATIVE_MARKERS: tuple[str, ...] = (
+    "exploit", "hack", "hacked", "被盗", "漏洞", "attack",
+    "delist", "下架", "下币", "depeg", "脱锚",
+    "处罚", "立案", "警示", "问询", "penalty", "enforcement", "wells",
+    "lawsuit", "监管", "ban", "resign", "离职", "step down",
+    "halt", "停牌", "suspend", "暂停", "加息", "限制",
+)
+POSITIVE_MARKERS: tuple[str, ...] = (
+    "复牌", "resume", "恢复交易", "lifting", "获批", "核准",
+    "approval", "approved", "partnership", "战略合作",
+    "listing", "上币", "上线", "降准", "降息", "中标",
+)
+
+
+def infer_direction(text: str) -> str:
+    """对已小写的全文做方向推断：NEGATIVE 优先，其次 POSITIVE，否则 UNCERTAIN。"""
+    if any(marker in text for marker in NEGATIVE_MARKERS):
+        return "NEGATIVE"
+    if any(marker in text for marker in POSITIVE_MARKERS):
+        return "POSITIVE"
+    return "UNCERTAIN"
+
 
 def extract_event(doc: Document) -> dict[str, Any] | None:
     if not doc.eligible_for_impact():
@@ -50,13 +74,15 @@ def extract_event(doc: Document) -> dict[str, Any] | None:
     if event_type is None:
         return None
     digest = sha256(f"{doc.document_id}:{event_type}".encode()).hexdigest()[:16]
+    direction = infer_direction(text)
     return {
         "event_id": f"evt-{digest}",
         "document_id": doc.document_id,
         "event_type": event_type,
         "affected_assets": list(doc.assets),
-        "direction": "UNCERTAIN",
-        "confidence": "0.40",
+        "direction": direction,
+        # 方向是推断出来的：置信度小幅上调，但上限由影响评分封顶
+        "confidence": "0.55" if direction != "UNCERTAIN" else "0.40",
         "impact_horizon": "1D",
         "entry_conditions": [],
         "exit_conditions": [],

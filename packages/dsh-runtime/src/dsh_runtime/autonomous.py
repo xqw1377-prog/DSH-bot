@@ -22,6 +22,40 @@ from dsh_runtime.snapshot_decisions import load_snapshot_signals, record_snapsho
 from dsh_runtime.trade_audit import ingest_and_audit_trades, load_closed_trades
 
 
+def _nominate_shadow_candidates(*market_sessions) -> dict:
+    """Shadow 阶段候选提名到 strategy-evolution(只注册 DRAFT,不晋级)。
+
+    环境变量门控:未配置 DSH_EVOLUTION_URL 则跳过(记录 skipped)。
+    提名失败不杀循环——记入 errors,下一轮重试(幂等)。
+    """
+    import os
+
+    from dsh_runtime.trade_audit import nominate_candidate_to_evolution
+
+    url = os.environ.get("DSH_EVOLUTION_URL", "")
+    api_key = os.environ.get("STRATEGY_EVOLUTION_API_KEY") or None
+    result = {"enabled": bool(url), "nominated": [], "errors": []}
+    if not url:
+        result["skipped"] = "DSH_EVOLUTION_URL not configured"
+        return result
+    for session, market in market_sessions:
+        for row in session.ledger.list_candidates(market=market, limit=20):
+            if row.get("stage") != "SHADOW" or row.get("nominated_evolution_id"):
+                continue
+            try:
+                outcome = nominate_candidate_to_evolution(
+                    session, candidate_id=row["candidate_id"],
+                    evolution_url=url, api_key=api_key)
+                result["nominated"].append({
+                    "candidate_id": row["candidate_id"],
+                    "evolution_candidate_id": outcome["evolution_candidate_id"],
+                    "market": market,
+                })
+            except Exception as exc:  # noqa: BLE001 提名失败不阻断自主循环
+                result["errors"].append(f"{row['candidate_id']}: {exc}")
+    return result
+
+
 def run_autonomous_cycle(
     *,
     profiles_root: str | Path,
@@ -82,6 +116,9 @@ def run_autonomous_cycle(
         market="A_SHARE",
         trades=load_closed_trades(snapshot_dir, "A_SHARE"),
     )
+    nominations = _nominate_shadow_candidates(
+        (crypto_session, "CRYPTO"), (ashare_session, "A_SHARE")
+    )
     crypto_audit = StrategyAuditorJob(
         bot_name="crypto-bot", market="CRYPTO", report_kind="intelligence-daily"
     ).run(crypto_session, now=current)
@@ -91,6 +128,7 @@ def run_autonomous_cycle(
     return {
         "as_of": current.isoformat(),
         "mode": "SHADOW",
+        "nominations": nominations,
         "ingest": {key: ingested.get(key) for key in ("documents", "events", "errors", "skipped") if key in ingested},
         "crypto_items": len(crypto_items),
         "ashare_items": len(ashare_items),

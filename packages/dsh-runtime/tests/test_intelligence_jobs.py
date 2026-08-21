@@ -207,6 +207,20 @@ def test_us_spillover_enters_ashare_bot_as_observe(tmp_path, monkeypatch):
                         "event_type": "LISTING",
                         "document_id": "doc-listing",
                     },
+                    {
+                        "event_id": "evt-eth-sue",
+                        "title": "ETH 项目方被提起诉讼",
+                        "canonical_url": "https://example.com/eth-lawsuit",
+                        "published_at": "2026-08-20T04:00:00+00:00",
+                        "source_id": "sec-enforce",
+                        "source_tier": "PRIMARY",
+                        "market": "CRYPTO",
+                        "affected_assets": ["ETHUSDT"],
+                        "direction": "NEGATIVE",
+                        "confidence": "0.55",
+                        "event_type": "REGULATION",
+                        "document_id": "doc-sue",
+                    },
                 ]
             },
             ensure_ascii=False,
@@ -243,4 +257,18 @@ def test_us_spillover_enters_ashare_bot_as_observe(tmp_path, monkeypatch):
     ).run(ashare, holdings=[], marks={}, now=start + timedelta(minutes=5))
     assert again == []
     assert len(ashare.intelligence.list(limit=10)) == 1
+    # 对照：推断方向 NEGATIVE 且命中持仓的事件 → 真实形成 Shadow（退出保护）
+    monkeypatch.delenv("DSH_CRYPTO_INTELLIGENCE_SOURCES", raising=False)
+    crypto = BotSession.for_profile(load_profile(PROFILES / "crypto-bot" / "profile.yaml"))
+    crypto_items = BotIntelligenceJob(
+        bot_name="crypto-bot",
+        market="CRYPTO",
+        source_env="DSH_CRYPTO_INTELLIGENCE_SOURCES",
+        watchlist=("ETHUSDT",),
+    ).run(crypto, holdings=[{"symbol": "ETHUSDT"}], marks={"ETHUSDT": "4200"}, now=start)
+    assert len(crypto_items) == 1
+    assert crypto_items[0]["action"] == "SELL"
+    shadows = crypto.tasks.find_by_status("SHADOW_RECORDED")
+    assert len(shadows) == 1
+    assert shadows[0]["payload"]["shadow_decision"]["action"] == "SELL"
     reset()

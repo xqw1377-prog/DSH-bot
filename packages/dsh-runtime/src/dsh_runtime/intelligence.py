@@ -213,8 +213,8 @@ def official_snapshot_items(
             "published_at": raw.get("published_at"),
             "symbol": symbol,
             "direction": (
-                "POSITIVE" if direction == "BULLISH"
-                else "NEGATIVE" if direction == "BEARISH"
+                "POSITIVE" if direction in {"BULLISH", "POSITIVE"}
+                else "NEGATIVE" if direction in {"BEARISH", "NEGATIVE"}
                 else "NEUTRAL"
             ),
             "confidence": raw.get("confidence"),

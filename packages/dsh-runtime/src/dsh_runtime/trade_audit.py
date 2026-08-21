@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import httpx
 import json
 import os
 from datetime import UTC, datetime
@@ -101,6 +102,7 @@ def ingest_and_audit_trades(session, *, market: str, trades: list[dict]) -> dict
     for decision_id in decision_ids:
         _ensure_episode(session, market=market, decision_id=decision_id)
     audited = 0
+    warning_rows: list[dict[str, Any]] = []
     for row in session.ledger.list(limit=500):
         trade = (row.get("payload") or {}).get("trade")
         if not trade:
@@ -108,22 +110,39 @@ def ingest_and_audit_trades(session, *, market: str, trades: list[dict]) -> dict
         audit = score_trade(trade)
         session.ledger.attach_audit(row["decision_id"], audit)
         audited += 1
+        if audit.get("warnings"):
+            warning_rows.append({
+                "decision_id": row["decision_id"],
+                "symbol": row.get("symbol"),
+                "fill_id": row.get("fill_id"),
+                "warnings": audit["warnings"],
+            })
     pipeline = run_optimization_pipeline(trades, market=market)
     now = datetime.now(UTC)
     persist_pipeline(
         session,
         market=market,
-        payload=pipeline,
+        payload={**pipeline, "warnings": warning_rows},
         period_key=now.date().isoformat(),
         created_at=now.isoformat(),
     )
+    build_weekly_summary(session, market=market, today=now)
     saved_candidates = _persist_candidates(
         session, market=market, pipeline=pipeline, period_key=now.date().isoformat()
     )
+    streak = _losing_streak(session)
+    if streak >= 3:
+        warning_rows.insert(0, {
+            "decision_id": None,
+            "symbol": None,
+            "fill_id": None,
+            "warnings": [f"连续亏损 {streak} 笔,建议人工复核近端交易"],
+        })
     return {
         "linked": linked,
         "imported": imported,
         "audited": audited,
+        "warnings": warning_rows,
         "candidates": pipeline["candidates"],
         "candidate_ids": saved_candidates,
         "pipeline": pipeline,
@@ -210,7 +229,7 @@ def score_trade(trade: dict) -> dict[str, Any]:
         dims["exit"]["score"] = min(int(dims["exit"]["score"]), 35)
         dims["exit"]["note"] += "；持仓超过 48 小时仍亏损，疑似止损过晚。"
     available = [item["score"] for item in dims.values()]
-    return {
+    audit = {
         "overall": int(sum(available) / len(available)),
         "dimensions": dims,
         "hold_hours": hold,
@@ -218,6 +237,32 @@ def score_trade(trade: dict) -> dict[str, Any]:
         "can_apply": False,
         "pipeline": ["SUGGESTION", "REPLAY", "BACKTEST", "SHADOW", "PAPER", "HUMAN_APPROVAL"],
     }
+    audit["warnings"] = deviation_warnings(trade, audit)
+    return audit
+
+
+def deviation_warnings(trade: dict, audit: dict | None = None) -> list[str]:
+    """实时交易偏差警告：只陈述可从已有字段核实的事实，不推测。
+
+    每笔已审计成交都可能产生警告；警告进入审计附件与每日汇总，
+    供今日看板与交易质量报告展示。
+    """
+    warnings: list[str] = []
+    pnl = _dec(trade.get("pnl"))
+    fee = _dec(trade.get("fee"))
+    pnl_r = _dec(trade.get("pnl_r"))
+    hold = _hold_hours(trade.get("opened_at"), trade.get("closed_at"))
+    if pnl != 0 and fee >= abs(pnl) * Decimal("0.3"):
+        warnings.append(f"手续费拖累: fee {fee} >= 30% |pnl| {abs(pnl)}")
+    if hold is not None and hold > 48 and pnl <= 0:
+        warnings.append(f"止损过晚嫌疑: 持仓 {hold:.1f}h 仍亏损 {pnl}")
+    if pnl_r <= Decimal("-2"):
+        warnings.append(f"单笔亏损超 2R: pnl_r {pnl_r}")
+    if audit is not None:
+        exit_score = ((audit.get("dimensions") or {}).get("exit") or {}).get("score")
+        if isinstance(exit_score, int) and exit_score < 40:
+            warnings.append(f"退出质量低分: {exit_score}/100")
+    return warnings
 
 
 def replay_exit_candidates(trades: list[dict]) -> list[dict[str, Any]]:
@@ -251,3 +296,119 @@ def _hold_hours(opened: Any, closed: Any) -> float | None:
     except ValueError:
         return None
     return round((end - start).total_seconds() / 3600, 2)
+
+
+def _losing_streak(session, limit: int = 50) -> int:
+    """从最近已平仓决策倒数的连续亏损笔数。"""
+    streak = 0
+    for row in session.ledger.list(limit=limit):
+        trade = (row.get("payload") or {}).get("trade")
+        if not trade or not trade.get("closed_at"):
+            continue
+        if _dec(trade.get("pnl")) < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def build_weekly_summary(session, *, market: str, today=None) -> dict[str, Any]:
+    """每周策略优化候选汇总:规则跨日稳定性 + 阶段推进轨迹。"""
+    from datetime import timedelta
+
+    now = today or datetime.now(UTC)
+    monday = (now - timedelta(days=now.weekday())).date().isoformat()
+    dailies: list[dict] = []
+    for offset in range(7):
+        key = (now - timedelta(days=offset)).date().isoformat()
+        for row in session.reports.list(report_kind="optimization-daily", limit=200):
+            if row.get("period_key") == key and row.get("market") == market:
+                dailies.append({"period_key": key, "payload": row.get("payload") or {}})
+                break
+    rules: dict[str, dict] = {}
+    for daily in dailies:
+        for cand in (daily["payload"].get("candidates") or []):
+            rule = cand.get("suggestion_id")
+            if not rule:
+                continue
+            entry = rules.setdefault(rule, {
+                "suggestion_id": rule,
+                "title": cand.get("title"),
+                "days_seen": 0,
+                "max_stage": "SUGGESTION",
+                "deltas": [],
+                "latest_period": None,
+            })
+            entry["days_seen"] += 1
+            entry["latest_period"] = daily["period_key"]
+            replay = cand.get("replay") or {}
+            if replay.get("delta") not in (None, ""):
+                entry["deltas"].append(str(replay["delta"]))
+            order = ["SUGGESTION", "REPLAY", "BACKTEST", "SHADOW"]
+            if (cand.get("stage") in order
+                    and order.index(cand["stage"]) > order.index(entry["max_stage"])):
+                entry["max_stage"] = cand["stage"]
+    weekly = {
+        "market": market,
+        "week_of": monday,
+        "days_covered": len({d["period_key"] for d in dailies}),
+        "rules": sorted(rules.values(), key=lambda r: -r["days_seen"]),
+        "can_apply": False,
+        "trade_blocked": True,
+        "mae_mfe": False,
+    }
+    session.reports.upsert(
+        report_kind="optimization-weekly",
+        period_key=monday,
+        market=market,
+        payload=weekly,
+        created_at=now.isoformat(),
+    )
+    return weekly
+
+
+def nominate_candidate_to_evolution(session, *, candidate_id: str,
+                                    evolution_url: str,
+                                    api_key: str | None = None) -> dict[str, Any]:
+    """把 Shadow 阶段的优化候选提名到 strategy-evolution 正式状态机。
+
+    只创建 DRAFT 候选(注册),不晋级——晋级必须走 evolution 的证据门禁
+    + 网关审批回查 + 独立审计。幂等:已提名过直接返回。
+    """
+    row = session.ledger.get_candidate(candidate_id)
+    if row is None:
+        raise KeyError(f"candidate not found: {candidate_id}")
+    # get_candidate 返回扁平化行(payload 字段已展开进行)
+    if row.get("nominated_evolution_id"):
+        return {
+            "candidate_id": candidate_id,
+            "evolution_candidate_id": row["nominated_evolution_id"],
+            "already_nominated": True,
+        }
+    if row.get("stage") != "SHADOW":
+        raise ValueError(
+            f"only SHADOW-stage candidates may be nominated (stage={row.get('stage')})")
+    headers = {"X-API-Key": api_key} if api_key else None
+    body = {
+        "market": row.get("market"),
+        "strategy_id": str(row.get("rule_id") or candidate_id),
+        "strategy_version": "optimized-1",
+    }
+    resp = httpx.post(
+        f"{evolution_url.rstrip('/')}/v1/candidates",
+        json=body, headers=headers, timeout=5.0,
+    )
+    if resp.status_code != 201:
+        raise RuntimeError(
+            f"evolution nomination failed ({resp.status_code}): {resp.text[:200]}")
+    evolution_id = resp.json().get("candidate_id")
+    updated = {**row, "nominated_evolution_id": evolution_id}
+    session.ledger.save_candidate({
+        key: value for key, value in updated.items()
+        if key not in ("created_at", "updated_at", "next_stage")
+    })
+    return {
+        "candidate_id": candidate_id,
+        "evolution_candidate_id": evolution_id,
+        "already_nominated": False,
+    }

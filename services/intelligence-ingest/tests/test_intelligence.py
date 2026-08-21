@@ -127,6 +127,44 @@ def test_sec_form4_and_nasdaq_halt_extract():
     assert "nasdaqtrader.com" in halt_docs[0].canonical_url
 
 
+def test_extract_infers_direction_deterministically():
+    """方向推断是确定性规则：风险词优先，未命中保持 UNCERTAIN 不猜。"""
+
+    def doc(title: str, text: str, market: str):
+        return make_document(
+            source_id="t", source_tier="PRIMARY",
+            canonical_url=f"https://example.com/{abs(hash((title, text))) % 10**8}",
+            published_at="2026-08-20T00:00:00+00:00",
+            raw_text=text, assets=[], collection_method="RSS",
+            title=title, market=market,
+        )
+
+    # 停牌公告 → NEGATIVE，置信度上调
+    negative = extract_event(doc(
+        "停牌公告", "某上市公司股票自即日起停牌，等待监管核查结果。", "A_SHARE",
+    ))
+    assert negative["direction"] == "NEGATIVE"
+    assert negative["confidence"] == "0.55"
+    # 复牌公告 → POSITIVE
+    positive = extract_event(doc(
+        "复牌公告", "某上市公司股票自即日起复牌，恢复正常交易。", "A_SHARE",
+    ))
+    assert positive["direction"] == "POSITIVE"
+    # 美股停牌 → NEGATIVE（流动性风险保守判定）
+    halt = extract_event(doc(
+        "NASDAQ trade halt GRNQ",
+        "Trading halted pending news; see official notice for details.",
+        "US",
+    ))
+    assert halt["direction"] == "NEGATIVE"
+    # 常规财报 → UNCERTAIN：没有数字不猜方向
+    uncertain = extract_event(doc(
+        "Form 4 filing", "Filed: 2026-08-19 Form 4 statement of changes.", "US",
+    ))
+    assert uncertain["direction"] == "UNCERTAIN"
+    assert uncertain["confidence"] == "0.40"
+
+
 def test_feed_extract_and_shadow_score(tmp_path):
     from intelligence_ingest.registry import SourceSpec
 
