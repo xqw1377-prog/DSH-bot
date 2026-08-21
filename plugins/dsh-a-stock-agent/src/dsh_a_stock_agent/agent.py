@@ -12,6 +12,13 @@ from dsh_runtime.execution import TradeExecutionCore
 class _ASharePolicy:
     """整手 / 涨跌停由执行核调用；交易时段以 health.market_session 为准。"""
 
+    price_limit_pct = Decimal("0.10")
+    # Paper 参考昨收价（真实系统应从行情快照取）
+    prev_close = {
+        "600519": Decimal("1680.50"),
+        "600519.SH": Decimal("1680.50"),
+    }
+
     def session_blocked(self, now=None) -> str | None:
         return None
 
@@ -24,6 +31,16 @@ class _ASharePolicy:
             return "数量为零"
         if qty % Decimal("100") != 0:
             return "A 股必须整手（100 股）"
+        if est_price is not None:
+            price = Decimal(str(est_price))
+            ref = self.prev_close.get(symbol or "")
+            if ref is not None:
+                up = ref * (1 + self.price_limit_pct)
+                down = ref * (1 - self.price_limit_pct)
+                if price > up:
+                    return f"超过涨停价 {up}（现价 {price}）"
+                if price < down:
+                    return f"低于跌停价 {down}（现价 {price}）"
         return None
 
 

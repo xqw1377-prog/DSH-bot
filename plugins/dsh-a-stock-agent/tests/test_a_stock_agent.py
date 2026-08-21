@@ -75,7 +75,8 @@ class AShareAdapter(MarketAdapter):
             intent=intent, estimated_cost=notional,
             estimated_slippage=Decimal("0.0005"),
             risk=RiskSnapshot(
-                risk_snapshot_id="rs-ashare-sig-1", market=self.market,
+                risk_snapshot_id=(intent.risk_snapshot_id if not isinstance(intent, dict) else intent["risk_snapshot_id"]),
+                market=self.market,
                 account_id="paper-a-share-001",
                 position_before=self._qty, position_after=self._qty + qty,
                 risk_budget_delta=notional,
@@ -93,14 +94,16 @@ class AShareAdapter(MarketAdapter):
         qty = Decimal(str(payload.get("quantity", "0.01")))
         self._qty += qty
         self._cash -= qty * self._price
+        self._last_qty = qty
         return f"{self.market.value}-ord-1"
 
     def get_order_status(self, order_id):
+        filled = str(getattr(self, "_last_qty", "0.01"))
         return {
             "order_id": order_id, "status": "FILLED",
-            "filled_quantity": "0.01", "avg_price": str(self._price),
+            "filled_quantity": filled, "avg_price": str(self._price),
             "fees": "0", "taxes": "0",
-            "fills": [{"quantity": "0.01", "price": str(self._price), "fee": "0"}],
+            "fills": [{"quantity": filled, "price": str(self._price), "fee": "0"}],
         }
 
     def cancel_order(self, order_id):
@@ -127,10 +130,13 @@ def setup(monkeypatch):
     orders_router.check_order_risk = (
         lambda base_url, **payload: {"passed": True, "limits_hit": []}
     )
+    # 确定性时钟：新鲜度校验与固定 TEST_NOW 快照对齐
+    orders_router.snapshot_now = lambda: TEST_NOW
     ADAPTER = AShareAdapter(Market.A_SHARE)
     register_adapter(Market.A_SHARE, ADAPTER)
     register_adapter(Market.CRYPTO, AShareAdapter(Market.CRYPTO))
     yield
+    orders_router.snapshot_now = lambda: datetime.now(UTC)
     approval_store.reset()
     reset()
 
@@ -193,3 +199,53 @@ def test_ashare_lunch_closed_skips_work():
     assert session.events.query("incident/opened") == []
     closed = session.memory.recent(kind="market-closed")
     assert closed and "闭市" in closed[0]["content"]
+
+
+# ---- Paper 模式强制市场规则（不允许 0.01 股/非整手/超涨跌停） ----
+
+def test_paper_rejects_non_lot_quantity():
+    """Paper 必须拒绝非整手买单（Shadow 记录拒绝，Paper 真实拦截）。"""
+    global ADAPTER
+    agent, session = _agent_and_session()
+    # 信号带 150 股（非整手）：预览通过但规则拦截，不发起审批
+    ADAPTER._signal_quantity = "150"
+
+    class QtyAdapter(AShareAdapter):
+        def get_signals(self):
+            from dsh_contracts import Signal as S
+            return [S(
+                signal_id="ashare-sig-bad", market=self.market,
+                strategy_id="mean-reversion-ashare", strategy_version="0.1.0",
+                symbol="600519", side="BUY", strength=0.8,
+                quantity="150",
+                generated_at=TEST_NOW,
+                valid_until=TEST_NOW + timedelta(minutes=30),
+                data_snapshot_id="snap-a",
+            )]
+
+    register_adapter(Market.A_SHARE, QtyAdapter(Market.A_SHARE))
+    run_once(session, agent)
+    assert session.tasks.find_by_status("AWAITING_APPROVAL") == []
+    assert session.tasks.find_by_status("PRE_SUBMIT_FAILED")
+
+
+def test_paper_rejects_over_limit_price():
+    """Paper 必须拒绝超过涨停价的订单。"""
+    from dsh_contracts import Signal as S
+
+    class LimitAdapter(AShareAdapter):
+        def get_signals(self):
+            return [S(
+                signal_id="ashare-sig-limit", market=self.market,
+                strategy_id="mean-reversion-ashare", strategy_version="0.1.0",
+                symbol="600519", side="BUY", strength=0.8,
+                quantity="100", entry_price="1900",
+                generated_at=TEST_NOW,
+                valid_until=TEST_NOW + timedelta(minutes=30),
+                data_snapshot_id="snap-a",
+            )]
+
+    agent, session = _agent_and_session()
+    register_adapter(Market.A_SHARE, LimitAdapter(Market.A_SHARE))
+    run_once(session, agent)
+    assert session.tasks.find_by_status("AWAITING_APPROVAL") == []

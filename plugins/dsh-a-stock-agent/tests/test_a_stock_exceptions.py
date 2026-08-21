@@ -35,6 +35,7 @@ class MatrixAdapter(MarketAdapter):
         self._cash = Decimal("1000000")
         self._price = Decimal("1680.50")
         self._last_order_id = ""
+        self._qty_by_order = {}
 
     def get_health(self):
         return HealthStatus(
@@ -77,7 +78,8 @@ class MatrixAdapter(MarketAdapter):
             intent=intent, estimated_cost=notional,
             estimated_slippage=Decimal("0.0005"),
             risk=RiskSnapshot(
-                risk_snapshot_id="rs-ashare-sig-x", market=self.market,
+                risk_snapshot_id=(intent.risk_snapshot_id if not isinstance(intent, dict) else intent["risk_snapshot_id"]),
+                market=self.market,
                 account_id="paper-a-share-001",
                 position_before=self._qty, position_after=self._qty + qty,
                 risk_budget_delta=notional,
@@ -101,6 +103,7 @@ class MatrixAdapter(MarketAdapter):
         self._last_order_id = order_id
         self.order_status[order_id] = self.next_submit_status
         qty = Decimal(str(payload.get("quantity", "0.01")))
+        self._qty_by_order[order_id] = qty
         if self.next_submit_status == "FILLED":
             self._qty += qty
             self._cash -= qty * self._price
@@ -108,7 +111,8 @@ class MatrixAdapter(MarketAdapter):
 
     def get_order_status(self, order_id):
         status = self.order_status.get(order_id, "UNKNOWN")
-        filled = "0.005" if status == "PARTIALLY_FILLED" else "0.01"
+        base_qty = self._qty_by_order.get(order_id, Decimal("0.01"))
+        filled = str(base_qty / 2) if status == "PARTIALLY_FILLED" else str(base_qty)
         return {
             "order_id": order_id, "status": status,
             "filled_quantity": filled, "avg_price": str(self._price),
@@ -140,10 +144,13 @@ def setup():
     orders_router.check_order_risk = (
         lambda base_url, **payload: {"passed": True, "limits_hit": []}
     )
+    # 确定性时钟：新鲜度校验与固定 TEST_NOW 快照对齐
+    orders_router.snapshot_now = lambda: TEST_NOW
     ADAPTER = MatrixAdapter(Market.A_SHARE)
     register_adapter(Market.A_SHARE, ADAPTER)
     register_adapter(Market.CRYPTO, MatrixAdapter(Market.CRYPTO))
     yield
+    orders_router.snapshot_now = lambda: datetime.now(UTC)
     approval_store.reset()
     reset()
 
